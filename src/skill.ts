@@ -1,14 +1,17 @@
 /**
  * skill.ts — 数学动画技能（Skill）注册。
  *
- * 面向"不懂代码、只懂数学物理"的用户：插件在加载时向 `ctx.skills` 注册
- * skills/ 目录下的全部技能：
- *   - math-animation  零代码技能包（默认推荐：模板路径）
- *   - manim-codegen   进阶技能包（自由代码：模型直接写 Manim 场景代码）
+ * 面向“只懂数学物理、不需要了解实现细节”的用户。
+ * 插件在加载时向 ctx.skills 注册 skills/ 目录下的全部技能。
  *
- * 每个技能正文都是一份完整提示词（SKILL.md），引导模型完成特定工作流。
- * 内容单一来源：skills/<name>/SKILL.md（同时可直接作为本地文件技能放入
- * ~/.dsh/skills 或项目 .dsh/skills 使用，无需本插件）。
+ * 产品层技能：
+ *   - learning-animation  用户可直接调用的“学习动画”
+ *
+ * 内部实现技能：
+ *   - math-animation      模板路径
+ *   - manim-codegen       自由代码路径
+ *
+ * 用户只需要看到产品能力，模型仍可在内部加载实现技能。
  */
 
 import { readdirSync, readFileSync, existsSync } from 'node:fs'
@@ -27,6 +30,8 @@ export interface MathAnimationSkill {
   description: string
   whenToUse?: string
   content: string
+  modelInvocable?: boolean
+  userInvocable?: boolean
 }
 
 /** 解析单个 SKILL.md：剥离 frontmatter，返回可注册的技能定义。 */
@@ -45,11 +50,20 @@ function parseSkillFile(file: string, fallbackName: string): MathAnimationSkill 
       meta[key] = value
     }
   }
+
+  const booleanMeta = (key: string, fallback = true): boolean => {
+    const value = meta[key]
+    if (value === undefined) return fallback
+    return value === 'true'
+  }
+
   return {
     name: meta.name ?? fallbackName,
     description: meta.description ?? `Skill ${fallbackName}`,
     whenToUse: meta.whenToUse || undefined,
     content: match[2].trim(),
+    modelInvocable: meta['disable-model-invocation'] === 'true' ? false : booleanMeta('model-invocable', true),
+    userInvocable: booleanMeta('user-invocable', true),
   }
 }
 
@@ -75,8 +89,10 @@ export function listSkills(): MathAnimationSkill[] {
 
 /**
  * 在运行时注册全部数学动画技能。
- * 运行时技能固定使用 rank 250：项目 provider 能覆盖它，它又能覆盖
- * custom/user 根的本地技能；同层同名先到先得。
+ * 由每个 SKILL.md 的 frontmatter 决定模型/用户可见性。
+ *
+ * 未写调用策略的旧技能保持双可调用，避免破坏现有部署；
+ * 新的内部实现技能显式使用 user-invocable: false。
  */
 export function registerSkills(ctx: Context) {
   for (const skill of listSkills()) {
@@ -84,7 +100,10 @@ export function registerSkills(ctx: Context) {
       ...skill,
       source: 'runtime',
       provider: 'math-manim',
-      invocation: { modelInvocable: true, userInvocable: true },
+      invocation: {
+        modelInvocable: skill.modelInvocable ?? true,
+        userInvocable: skill.userInvocable ?? true,
+      },
     }
     ctx.skills.register(registration)
   }
