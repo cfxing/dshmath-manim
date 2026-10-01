@@ -46,7 +46,7 @@ validate_math_code → render_math_code
 
 所有学习视频必须输出到当前 Agent 工作区中的：
 
-错题本/动画
+manim_out
 
 调用 dshmath-manim 时必须传入该目录的绝对路径作为 outdir。
 
