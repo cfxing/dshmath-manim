@@ -89,20 +89,19 @@ export function listSkills(): MathAnimationSkill[] {
 
 /**
  * 在运行时注册全部数学动画技能。
- * 由每个 SKILL.md 的 frontmatter 决定模型/用户可见性。
- *
- * 未写调用策略的旧技能保持双可调用，避免破坏现有部署；
- * 新的内部实现技能显式使用 user-invocable: false。
+ * 数学动画和 Manim codegen 是内部实现技能；learning-animation 才是
+ * 用户面向的产品入口。其余未来技能可通过 frontmatter 显式声明。
  */
 export function registerSkills(ctx: Context) {
   for (const skill of listSkills()) {
+    const internalImplementation = skill.name === 'math-animation' || skill.name === 'manim-codegen'
     const registration: SkillRegistration = {
       ...skill,
       source: 'runtime',
       provider: 'math-manim',
       invocation: {
         modelInvocable: skill.modelInvocable ?? true,
-        userInvocable: skill.userInvocable ?? true,
+        userInvocable: skill.userInvocable ?? !internalImplementation,
       },
     }
     ctx.skills.register(registration)
