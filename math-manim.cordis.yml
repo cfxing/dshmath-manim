@@ -8,8 +8,8 @@
 #         name: 'dshmath-manim'
 
 - insert:
-    - id: dshmath-manim
-      name: 'dshmath-manim'
-      config:
+    - id: dsh-math-manim
+      name: 'dsh-math-manim'
+      # config:
         # 渲染输出目录（可选，默认插件包内 out/）
-        outdir: ./math-videos
+        # outdir: ./math-videos

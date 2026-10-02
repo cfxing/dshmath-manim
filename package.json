@@ -1,5 +1,5 @@
 {
-  "name": "dshmath-manim",
+  "name": "dsh-math-manim",
   "version": "0.1.0",
   "description": "DeepSeek Harness math animation plugin powered by Manim CE (zero-code skills for math/physics users)",
   "type": "module",
