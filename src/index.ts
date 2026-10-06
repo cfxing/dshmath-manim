@@ -23,11 +23,15 @@ export const inject = ['tools', 'skills']
 /** 插件配置：outdir 对应 cordis.yml 中的 config.outdir，不配置时用插件 out/ 目录 */
 export interface Config {
   outdir?: string
+  ttsModel?: string
+  ttsVoice?: string
 }
 
 /** 同名 Schema：Cordis 加载插件时据此校验配置并填充默认值 */
 export const Config: Schema<Config> = Schema.object({
   outdir: Schema.string(),
+  ttsModel: Schema.string(),
+  ttsVoice: Schema.string(),
 })
 
 export function apply(ctx: Context, config: Config) {
@@ -90,6 +94,12 @@ export function apply(ctx: Context, config: Config) {
           enum: ['low', 'medium', 'high', 'ultra'],
           description: 'Render quality. Use "low" for quick preview, "high" for final output.',
         },
+        narration: {
+          type: 'string',
+          description: 'Optional Chinese narration. When provided, Qwen3-TTS audio is generated and muxed into the MP4.',
+        },
+        tts_model: { type: 'string', description: 'Optional TTS model name.' },
+        tts_voice: { type: 'string', description: 'Optional Qwen3-TTS voice, default Vivian.' },
         outdir: { type: 'string', description: 'Output directory. Defaults to plugin out/.' },
       },
       output: {
@@ -110,6 +120,9 @@ export function apply(ctx: Context, config: Config) {
             params: (args.params ?? {}) as Record<string, unknown>,
             quality: args.quality ?? 'low',
             outdir: args.outdir ?? config.outdir,
+            narration: args.narration,
+            ttsModel: args.tts_model ?? config.ttsModel,
+            ttsVoice: args.tts_voice ?? config.ttsVoice,
           },
           exec.signal,
         )
@@ -133,6 +146,9 @@ export function apply(ctx: Context, config: Config) {
         code: { type: 'string', required: true, description: 'Complete Manim Python scene source code (class extending Scene).' },
         quality: { type: 'string', enum: ['low', 'medium', 'high', 'ultra'], description: 'Render quality. Default low.' },
         outdir: { type: 'string', description: 'Output directory. Defaults to plugin out/.' },
+        narration: { type: 'string', description: 'Optional narration text to synthesize with Qwen3-TTS and mux into the MP4.' },
+        tts_model: { type: 'string', description: 'Optional TTS model name.' },
+        tts_voice: { type: 'string', description: 'Optional Qwen3-TTS voice.' },
       },
       output: {
         schema: { type: 'object', additionalProperties: true },
@@ -146,7 +162,14 @@ export function apply(ctx: Context, config: Config) {
         ],
       },
       async execute(args, exec) {
-        const res = await renderCode({ code: args.code, quality: args.quality ?? 'low', outdir: args.outdir ?? config.outdir }, exec.signal)
+        const res = await renderCode({
+          code: args.code,
+          quality: args.quality ?? 'low',
+          outdir: args.outdir ?? config.outdir,
+          narration: args.narration,
+          ttsModel: args.tts_model ?? config.ttsModel,
+          ttsVoice: args.tts_voice ?? config.ttsVoice,
+        }, exec.signal)
         if (!res.data) {
           throw new Error(`render_math_code: ${res.stderrTail ?? 'no output'}`)
         }

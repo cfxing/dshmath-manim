@@ -23,6 +23,11 @@ export interface RenderRequest {
   quality?: string
   /** 输出目录（绝对路径） */
   outdir?: string
+  /** Optional narration text. When set, Qwen3-TTS audio is muxed into the MP4. */
+  narration?: string
+  ttsUrl?: string
+  ttsModel?: string
+  ttsVoice?: string
 }
 
 export interface RenderCodeRequest {
@@ -30,6 +35,10 @@ export interface RenderCodeRequest {
   code: string
   quality?: string
   outdir?: string
+  narration?: string
+  ttsUrl?: string
+  ttsModel?: string
+  ttsVoice?: string
 }
 
 export interface RunnerResult {
@@ -131,6 +140,10 @@ export async function renderScene(req: RenderRequest, signal?: AbortSignal): Pro
     '--quality', req.quality ?? 'low',
     '--outdir', req.outdir ?? join(__dirname, '..', 'out'),
   ]
+  if (req.narration) args.push('--narration', req.narration)
+  if (req.ttsUrl) args.push('--tts-url', req.ttsUrl)
+  if (req.ttsModel) args.push('--tts-model', req.ttsModel)
+  if (req.ttsVoice) args.push('--tts-voice', req.ttsVoice)
   return runProcess(args, signal, TIMEOUT_MS, JSON.stringify(req.params ?? {}))
 }
 
@@ -143,7 +156,12 @@ export async function renderCode(req: RenderCodeRequest, signal?: AbortSignal): 
   const tmp = join(out, `.scene_${Date.now()}.py`)
   writeFileSync(tmp, req.code, 'utf8')
   try {
-    return await runProcess(['render-code', '--code-file', tmp, '--quality', req.quality ?? 'low', '--outdir', out], signal)
+    const args = ['render-code', '--code-file', tmp, '--quality', req.quality ?? 'low', '--outdir', out]
+    if (req.narration) args.push('--narration', req.narration)
+    if (req.ttsUrl) args.push('--tts-url', req.ttsUrl)
+    if (req.ttsModel) args.push('--tts-model', req.ttsModel)
+    if (req.ttsVoice) args.push('--tts-voice', req.ttsVoice)
+    return await runProcess(args, signal)
   } finally {
     rmSync(tmp, { force: true })
   }

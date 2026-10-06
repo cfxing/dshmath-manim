@@ -1,6 +1,6 @@
 # dshmath-manim
 
-DeepSeek Harness（dsh）数学动画插件 —— 基于 Manim CE 将数学概念渲染为动画视频。
+DeepSeek Harness（dsh）数学动画插件 —— 基于 Manim CE 将数学概念渲染为动画视频，并可通过 Qwen3-TTS 自动添加旁白。
 
 「一切皆插件」：本插件以 Cordis 插件形式提供一组 **Tool**，模型通过自然语言即可生成数学动画。
 
@@ -67,6 +67,11 @@ python3 py/wizard_server.py --port 8321
 | `list_math_templates` | 列出模板与参数模式 | 开场发现能力 |
 | `render_math_scene` | 模板参数化渲染（安全） | 推荐路径 |
 | `render_math_code` | 渲染模型自写 Manim 场景 | 模板不匹配时 |
+
+两个渲染工具都支持可选的 `narration` 参数。传入中文讲稿后，插件默认请求
+本地调用已安装的 `qwen-tts` Python 包，使用
+`Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice` 和 `Vivian` 声音，并使用 ffmpeg 将音频合成到返回的 MP4。
+只有在确实部署了 HTTP 兼容服务时，才通过 `QWEN3_TTS_URL` 切换到远程调用模式。
 | `validate_math_code` | AST 静态安全校验 | 渲染前的自愈检查 |
 
 ## 零代码技能包（Skill，核心推荐）

@@ -15,12 +15,16 @@ from __future__ import annotations
 
 import argparse
 import ast
+import base64
+import binascii
 import json
 import os
 import re
 import subprocess
 import sys
 import tempfile
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 TEMPLATES_DIR = Path(__file__).resolve().parent / "templates"
@@ -42,6 +46,10 @@ NUMPY_DANGEROUS_ATTRS = {
 }
 
 VIDEO_EXTENSIONS = (".mp4", ".webm", ".mov")
+DEFAULT_TTS_URL = "http://127.0.0.1:8000/v1/audio/speech"
+DEFAULT_TTS_MODEL = "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice"
+DEFAULT_TTS_VOICE = "Vivian"
+QWEN_TTS_ADAPTER = Path(__file__).resolve().parent / "qwen3_tts_runner.py"
 
 
 def _banner() -> dict:
@@ -280,13 +288,142 @@ def _render_manim(code_file: Path, quality: str, outdir: Path, extra_args: list[
 def _find_video(outdir: Path) -> Path | None:
     """定位成片：排除 partial_movie_files 中间文件，优先取最新的完整视频。"""
     for ext in VIDEO_EXTENSIONS:
-        hits = [h for h in outdir.rglob(f"*{ext}") if "partial_movie_files" not in h.parts]
+        hits = [h for h in outdir.rglob(f"*{ext}") if "partial_movie_files" not in h.parts and "_narrated" not in h.stem]
         if hits:
             return sorted(hits, key=lambda p: p.stat().st_mtime)[-1]
     return None
 
 
-def render_scene(template: str, params: dict, quality: str = "low", outdir: str | Path | None = None) -> dict:
+def _tts_url(url: str | None) -> str:
+    return (url or os.environ.get("QWEN3_TTS_URL") or DEFAULT_TTS_URL).rstrip("/")
+
+
+def _request_local_tts(text: str, model: str | None, voice: str | None) -> tuple[bytes, str]:
+    """Run the locally installed qwen-tts package in its own Python environment."""
+    qwen_python = os.environ.get("QWEN3_TTS_PYTHON", "/home/sangfor/miniconda3/envs/qwen3-tts/bin/python")
+    if not Path(qwen_python).exists():
+        qwen_python = sys.executable
+    fd, name = tempfile.mkstemp(prefix="qwen3_tts_", suffix=".wav")
+    os.close(fd)
+    output = Path(name)
+    try:
+        proc = subprocess.run(
+            [qwen_python, str(QWEN_TTS_ADAPTER)],
+            input=json.dumps({
+                "model": model or os.environ.get("QWEN3_TTS_MODEL") or DEFAULT_TTS_MODEL,
+                "text": text,
+                "voice": voice or os.environ.get("QWEN3_TTS_VOICE") or DEFAULT_TTS_VOICE,
+                "language": os.environ.get("QWEN3_TTS_LANGUAGE", "Chinese"),
+                "output": str(output),
+            }),
+            capture_output=True, text=True, timeout=300,
+            # librosa bundled in some qwen-tts environments has an invalid
+            # numba cache locator; disabling numba JIT here affects only the
+            # import-time audio helper, not PyTorch model inference.
+            env={**os.environ, "NUMBA_DISABLE_JIT": "1"},
+        )
+        if proc.returncode != 0 or not output.exists():
+            raise RuntimeError(f"local qwen-tts failed: {proc.stderr[-1600:]}")
+        return output.read_bytes(), "audio/wav"
+    finally:
+        output.unlink(missing_ok=True)
+
+
+def _request_tts(text: str, url: str | None, model: str | None, voice: str | None) -> tuple[bytes, str]:
+    """Use local qwen-tts by default; optionally support an HTTP endpoint.
+
+    The OpenAI-compatible endpoint returns audio bytes.  The local desktop route
+    returns either audio bytes or {"audio": "<base64>"}; supporting both keeps the
+    plugin usable with the two server launch modes commonly used for Qwen3-TTS.
+    """
+    # URL is deliberately opt-in. The normal path directly invokes qwen-tts.
+    if not url and not os.environ.get("QWEN3_TTS_URL"):
+        return _request_local_tts(text, model, voice)
+    endpoint = _tts_url(url)
+    if endpoint.endswith("/api/tts/synthesize"):
+        payload = {"text": text, "format": "base64"}
+    else:
+        payload = {
+            "model": model or os.environ.get("QWEN3_TTS_MODEL") or DEFAULT_TTS_MODEL,
+            "input": text,
+            "voice": voice or os.environ.get("QWEN3_TTS_VOICE") or DEFAULT_TTS_VOICE,
+            "response_format": "wav",
+        }
+    request = urllib.request.Request(
+        endpoint,
+        data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+        headers={"Content-Type": "application/json", "Accept": "audio/wav, audio/mpeg, application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=180) as response:
+            data = response.read()
+            content_type = response.headers.get_content_type()
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")[-1000:]
+        raise RuntimeError(f"Qwen3-TTS HTTP {exc.code}: {detail}") from exc
+    except urllib.error.URLError as exc:
+        raise RuntimeError(f"cannot connect to Qwen3-TTS at {endpoint}: {exc.reason}") from exc
+
+    if content_type == "application/json" or data[:1] in (b"{", b"["):
+        try:
+            body = json.loads(data.decode("utf-8"))
+            encoded = body.get("audio") or body.get("data")
+            if not encoded:
+                raise ValueError("response has no audio field")
+            data = base64.b64decode(encoded)
+            content_type = "audio/wav"
+        except (ValueError, KeyError, TypeError, binascii.Error) as exc:
+            raise RuntimeError(f"invalid Qwen3-TTS response: {exc}") from exc
+    if not data:
+        raise RuntimeError("Qwen3-TTS returned an empty audio response")
+    return data, content_type
+
+
+def _mux_narration(video: Path, narration: str, outdir: Path, tts_url: str | None,
+                   tts_model: str | None, tts_voice: str | None) -> tuple[Path, Path]:
+    """Generate narration and mux it into the rendered video."""
+    audio, content_type = _request_tts(narration, tts_url, tts_model, tts_voice)
+    audio_suffix = ".mp3" if "mpeg" in content_type else ".wav"
+    audio_fd, audio_name = tempfile.mkstemp(prefix="qwen3_tts_", suffix=audio_suffix, dir=outdir)
+    os.close(audio_fd)
+    audio_file = Path(audio_name)
+    muxed = video.with_name(f"{video.stem}_narrated{video.suffix}")
+    try:
+        audio_file.write_bytes(audio)
+        proc = subprocess.run(
+            ["ffmpeg", "-y", "-i", str(video), "-i", str(audio_file),
+             "-map", "0:v:0", "-map", "1:a:0", "-c:v", "copy", "-c:a", "aac",
+             "-af", "apad", "-shortest", "-movflags", "+faststart", str(muxed)],
+            capture_output=True, text=True, timeout=180,
+        )
+        if proc.returncode != 0:
+            muxed.unlink(missing_ok=True)
+            raise RuntimeError(f"ffmpeg audio mux failed: {proc.stderr[-1200:]}")
+        return muxed, audio_file
+    finally:
+        audio_file.unlink(missing_ok=True)
+
+
+def _add_narration(result: dict, narration: str | None, outdir: Path, tts_url: str | None,
+                   tts_model: str | None, tts_voice: str | None) -> dict:
+    if not result.get("ok") or not result.get("video") or not narration or not narration.strip():
+        return result
+    try:
+        narrated, _ = _mux_narration(Path(result["video"]), narration.strip(), outdir, tts_url, tts_model, tts_voice)
+        result["video"] = str(narrated)
+        result["size_bytes"] = narrated.stat().st_size
+        result["audio"] = True
+    except Exception as exc:
+        result["ok"] = False
+        result["error"] = f"narration failed: {exc}"
+        result["audio"] = False
+    return result
+
+
+def render_scene(template: str, params: dict, quality: str = "low", outdir: str | Path | None = None,
+                 narration: str | None = None, tts_url: str | None = None,
+                 tts_model: str | None = None, tts_voice: str | None = None) -> dict:
     """渲染一个模板场景，返回结果 dict（不打印）。供 CLI / wizard / TS 桥接共用。"""
     templates = _load_templates()
     if template not in templates:
@@ -329,7 +466,7 @@ def render_scene(template: str, params: dict, quality: str = "low", outdir: str 
         }
         if proc.returncode != 0:
             result["error"] = proc.stderr[-2000:]
-        return result
+        return _add_narration(result, narration, out, tts_url, tts_model, tts_voice)
 
 
 def cmd_render(args: argparse.Namespace) -> int:
@@ -342,7 +479,8 @@ def cmd_render(args: argparse.Namespace) -> int:
     except json.JSONDecodeError as exc:
         print(json.dumps({"ok": False, "error": f"invalid params JSON: {exc}"}))
         return 2
-    result = render_scene(args.template, params, args.quality, args.outdir)
+    result = render_scene(args.template, params, args.quality, args.outdir,
+                          args.narration, args.tts_url, args.tts_model, args.tts_voice)
     print(json.dumps(result, ensure_ascii=False))
     return 0 if result.get("ok") else 2 if "unknown template" in str(result.get("error", "")) else 1
 
@@ -370,6 +508,7 @@ def cmd_render_code(args: argparse.Namespace) -> int:
     }
     if proc.returncode != 0:
         result["error"] = proc.stderr[-2000:]
+    result = _add_narration(result, args.narration, outdir, args.tts_url, args.tts_model, args.tts_voice)
     print(json.dumps(result))
     return 0 if proc.returncode == 0 else 1
 
@@ -407,12 +546,20 @@ def main(argv: list[str] | None = None) -> int:
     p_render.add_argument("--params", default="", help="JSON object of template parameters (or pass via stdin)")
     p_render.add_argument("--quality", default="low", choices=["low", "medium", "high", "ultra"])
     p_render.add_argument("--outdir", default=str(Path.cwd() / "out"))
+    p_render.add_argument("--narration", default="", help="optional narration text")
+    p_render.add_argument("--tts-url", default="", help="Qwen3-TTS OpenAI-compatible endpoint")
+    p_render.add_argument("--tts-model", default="", help="Qwen3-TTS model name")
+    p_render.add_argument("--tts-voice", default="", help="Qwen3-TTS voice name")
     p_render.set_defaults(func=cmd_render)
 
     p_render_code = sub.add_parser("render-code", help="render an existing scene python file")
     p_render_code.add_argument("--code-file", required=True)
     p_render_code.add_argument("--quality", default="low", choices=["low", "medium", "high", "ultra"])
     p_render_code.add_argument("--outdir", default=str(Path.cwd() / "out"))
+    p_render_code.add_argument("--narration", default="", help="optional narration text")
+    p_render_code.add_argument("--tts-url", default="", help="Qwen3-TTS OpenAI-compatible endpoint")
+    p_render_code.add_argument("--tts-model", default="", help="Qwen3-TTS model name")
+    p_render_code.add_argument("--tts-voice", default="", help="Qwen3-TTS voice name")
     p_render_code.set_defaults(func=cmd_render_code)
 
     args = parser.parse_args(argv)
