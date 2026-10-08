@@ -431,7 +431,7 @@ def _add_narration(result: dict, narration: str | None, outdir: Path, tts_url: s
     if not result.get("ok") or not result.get("video") or not narration or not narration.strip():
         return result
     try:
-        narrated, _ = _mux_narration(Path(result["video"]), narration.strip(), outdir, tts_url, tts_model, tts_voice)
+        narrated, _ = _mux_narration(Path(result["video"]), narration.strip(), outdir, tts_url, tts_model, tts_voice, tts_speed)
         result["video"] = str(narrated)
         result["size_bytes"] = narrated.stat().st_size
         result["audio"] = True
