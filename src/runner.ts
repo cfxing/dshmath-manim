@@ -40,6 +40,7 @@ export interface RenderCodeRequest {
   ttsUrl?: string
   ttsModel?: string
   ttsVoice?: string
+  ttsSpeed?: number
 }
 
 export interface RunnerResult {
