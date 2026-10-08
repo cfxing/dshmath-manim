@@ -156,6 +156,7 @@ export function apply(ctx: Context, config: Config) {
         code: { type: 'string', required: true, description: 'Complete Manim Python scene source code (class extending Scene).' },
         quality: { type: 'string', enum: ['low', 'medium', 'high', 'ultra'], description: 'Render quality. Default low.' },
         outdir: { type: 'string', description: 'Output directory. Defaults to plugin out/.' },
+        narration_segments: { type: 'array', items: { type: 'string' }, description: 'Optional segmented Chinese narration; one sentence per animation step.' },
         narration: { type: 'string', description: 'Optional narration text to synthesize with Qwen3-TTS and mux into the MP4.' },
         tts_model: { type: 'string', description: 'Optional TTS model name.' },
         tts_voice: { type: 'string', description: 'Optional Qwen3-TTS speaker. Chinese presets: Vivian, Serena, Uncle_Fu, Dylan, Eric.' },
