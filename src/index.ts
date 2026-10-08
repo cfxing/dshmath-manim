@@ -26,6 +26,7 @@ export interface Config {
   ttsModel?: string
   ttsVoice?: string
   ttsSpeed?: number
+  narrationSegments?: string[]
 }
 
 /** 同名 Schema：Cordis 加载插件时据此校验配置并填充默认值 */
@@ -96,6 +97,11 @@ export function apply(ctx: Context, config: Config) {
           enum: ['low', 'medium', 'high', 'ultra'],
           description: 'Render quality. Use "low" for quick preview, "high" for final output.',
         },
+        narration_segments: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Optional segmented Chinese narration. One sentence per animation step; the plugin measures each sentence and builds the shared RUN timeline.',
+        },
         narration: {
           type: 'string',
           description: 'Optional Chinese narration. When provided, Qwen3-TTS audio is generated and muxed into the MP4.',
@@ -123,7 +129,7 @@ export function apply(ctx: Context, config: Config) {
             params: (args.params ?? {}) as Record<string, unknown>,
             quality: args.quality ?? 'low',
             outdir: args.outdir ?? config.outdir,
-            narration: args.narration,
+            narration: args.narrationSegments?.length ? JSON.stringify(args.narrationSegments) : args.narration,
             ttsModel: args.tts_model ?? config.ttsModel,
             ttsVoice: args.tts_voice ?? config.ttsVoice,
             ttsSpeed: args.tts_speed ?? config.ttsSpeed,
@@ -171,7 +177,7 @@ export function apply(ctx: Context, config: Config) {
           code: args.code,
           quality: args.quality ?? 'low',
           outdir: args.outdir ?? config.outdir,
-          narration: args.narration,
+          narration: args.narrationSegments?.length ? JSON.stringify(args.narrationSegments) : args.narration,
           ttsModel: args.tts_model ?? config.ttsModel,
           ttsVoice: args.tts_voice ?? config.ttsVoice,
           ttsSpeed: args.tts_speed ?? config.ttsSpeed,
