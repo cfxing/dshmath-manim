@@ -33,8 +33,8 @@ export interface Config {
 export const Config: Schema<Config> = Schema.object({
   outdir: Schema.string(),
   ttsModel: Schema.string(),
-  ttsVoice: Schema.string(),
-  ttsSpeed: Schema.number(),
+  ttsVoice: Schema.string().default("Serena"),
+  ttsSpeed: Schema.number().default(0.97),
 })
 
 export function apply(ctx: Context, config: Config) {
@@ -107,8 +107,8 @@ export function apply(ctx: Context, config: Config) {
           description: 'Optional Chinese narration. When provided, Qwen3-TTS audio is generated and muxed into the MP4.',
         },
         tts_model: { type: 'string', description: 'Optional TTS model name.' },
-        tts_voice: { type: 'string', description: 'Optional Qwen3-TTS speaker. Chinese presets: Vivian, Serena, Uncle_Fu, Dylan, Eric; default Vivian.' },
-        tts_speed: { type: 'number', description: 'Qwen3-TTS playback speed multiplier. 1.0=normal, 0.97≈3% slower, 1.03≈3% faster. Range 0.5-2.0.' },
+        tts_voice: { type: 'string', description: 'Optional Qwen3-TTS speaker. Chinese presets: Vivian, Serena, Uncle_Fu, Dylan, Eric; default Serena.' },
+        tts_speed: { type: 'number', description: 'Qwen3-TTS playback speed multiplier. Default 0.97. 1.0=normal, 0.97≈3% slower, 1.03≈3% faster. Range 0.5-2.0.' },
         outdir: { type: 'string', description: 'Output directory. Defaults to plugin out/.' },
       },
       output: {
