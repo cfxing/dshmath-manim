@@ -531,16 +531,18 @@ def _mux_narration(video: Path, audio_file: Path) -> tuple[Path, Path]:
         raise RuntimeError(f"ffmpeg audio mux failed: {proc.stderr[-1200:]}")
     return muxed, audio_file
 
-def _add_narration(result: dict, narration: str | None, outdir: Path, tts_url: str | None,
-                   tts_model: str | None, tts_voice: str | None,
-                   tts_speed: float = 1.0) -> dict:
-    if not result.get("ok") or not result.get("video") or not narration or not narration.strip():
+def _add_narration(result: dict, audio_file: Path | None, run: list[float] | None,
+                   durations: list[float] | None) -> dict:
+    if not result.get("ok") or not result.get("video") or audio_file is None:
         return result
     try:
-        narrated, _ = _mux_narration(Path(result["video"]), narration.strip(), outdir, tts_url, tts_model, tts_voice, tts_speed)
+        narrated, _ = _mux_narration(Path(result["video"]), audio_file)
         result["video"] = str(narrated)
         result["size_bytes"] = narrated.stat().st_size
         result["audio"] = True
+        result["run"] = run or []
+        result["narration_durations"] = durations or []
+        result["narration_total"] = sum(run or [])
     except Exception as exc:
         result["ok"] = False
         result["error"] = f"narration failed: {exc}"
@@ -552,49 +554,55 @@ def render_scene(template: str, params: dict, quality: str = "low", outdir: str 
                  narration: str | None = None, tts_url: str | None = None,
                  tts_model: str | None = None, tts_voice: str | None = None,
                  tts_speed: float = 1.0) -> dict:
-    """渲染一个模板场景，返回结果 dict（不打印）。供 CLI / wizard / TS 桥接共用。"""
+    """Render a template scene. Narration is synthesized first so its timing can be measured."""
     templates = _load_templates()
     if template not in templates:
         return {"ok": False, "error": f"unknown template '{template}'", "available": sorted(templates)}
-
     meta = templates[template]
     errors = _validate_template_params(meta, params)
     if errors:
         return {"ok": False, "error": "parameter validation failed", "details": errors}
-
     try:
         code = _render_template(meta, params, meta["code"])
     except Exception as exc:
         return {"ok": False, "error": f"template expansion failed: {exc}"}
 
-    with tempfile.TemporaryDirectory() as tmp:
-        # 场景文件 = 受限求值器头部 + 展开后的模板代码，完全自包含
-        scene_src = _SAFE_EVAL_SRC + "\n" + code
-        code_file = Path(tmp) / f"{meta.get('name', template)}_scene.py"
-        code_file.write_text(scene_src, encoding="utf-8")
-        # 模板代码是可信的（仓库自带），只做语法检查，不做 AST 安全校验
-        try:
-            ast.parse(scene_src)
-        except SyntaxError as exc:
-            return {"ok": False, "error": f"expanded template has syntax error: {exc}", "code": code}
+    out = Path(outdir).resolve() if outdir else Path.cwd() / "out"
+    out.mkdir(parents=True, exist_ok=True)
 
-        out = Path(outdir).resolve() if outdir else Path.cwd() / "out"
-        out.mkdir(parents=True, exist_ok=True)
-        proc = _render_manim(code_file, quality, out, [])
-        # 仅渲染成功时才报告成片，避免把历史视频当作本次结果
-        video = _find_video(out) if proc.returncode == 0 else None
-        result = {
-            "ok": proc.returncode == 0,
-            "template": template,
-            "params": params,
-            "quality": quality,
-            "returncode": proc.returncode,
-            "video": str(video) if video else None,
-            "size_bytes": video.stat().st_size if video else None,
-        }
-        if proc.returncode != 0:
-            result["error"] = proc.stderr[-2000:]
-        return _add_narration(result, narration, out, tts_url, tts_model, tts_voice, tts_speed)
+    audio_file = None
+    run = None
+    durations = None
+    try:
+        if narration and narration.strip():
+            audio_file, run, durations = _prepare_narration(
+                narration, out, tts_url, tts_model, tts_voice, tts_speed
+            )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            scene_src = _SAFE_EVAL_SRC + "\n" + code
+            code_file = Path(tmp) / f"{meta.get('name', template)}_scene.py"
+            code_file.write_text(scene_src, encoding="utf-8")
+            try:
+                ast.parse(scene_src)
+            except SyntaxError as exc:
+                return {"ok": False, "error": f"expanded template has syntax error: {exc}", "code": code}
+            proc = _render_manim(code_file, quality, out, [])
+            video = _find_video(out) if proc.returncode == 0 else None
+            result = {
+                "ok": proc.returncode == 0,
+                "template": template,
+                "params": params,
+                "quality": quality,
+                "returncode": proc.returncode,
+                "video": str(video) if video else None,
+                "size_bytes": video.stat().st_size if video else None,
+            }
+            if proc.returncode != 0:
+                result["error"] = proc.stderr[-2000:]
+            return _add_narration(result, audio_file, run, durations)
+    except Exception as exc:
+        return {"ok": False, "error": f"narration failed: {exc}", "audio": False}
 
 
 def cmd_render(args: argparse.Namespace) -> int:
@@ -625,20 +633,46 @@ def cmd_render_code(args: argparse.Namespace) -> int:
         return 2
     outdir = Path(args.outdir).resolve()
     outdir.mkdir(parents=True, exist_ok=True)
-    proc = _render_manim(code_file, args.quality, outdir, [])
-    video = _find_video(outdir) if proc.returncode == 0 else None
-    result = {
-        "ok": proc.returncode == 0,
-        "quality": args.quality,
-        "returncode": proc.returncode,
-        "video": str(video) if video else None,
-        "size_bytes": video.stat().st_size if video else None,
-    }
-    if proc.returncode != 0:
-        result["error"] = proc.stderr[-2000:]
-    result = _add_narration(result, args.narration, outdir, args.tts_url, args.tts_model, args.tts_voice, args.tts_speed)
-    print(json.dumps(result))
-    return 0 if proc.returncode == 0 else 1
+
+    audio_file = None
+    run = None
+    durations = None
+    try:
+        if args.narration and args.narration.strip():
+            audio_file, run, durations = _prepare_narration(
+                args.narration, outdir, args.tts_url, args.tts_model, args.tts_voice, args.tts_speed
+            )
+            code = _inject_run(code, run)
+
+        # Re-validate the final injected source before rendering.
+        ok, violations = _validate_code(code)
+        if not ok:
+            print(json.dumps({"ok": False, "error": "scene failed static validation after timing injection", "details": violations}))
+            return 2
+
+        prepared = outdir / f".scene_timed_{os.getpid()}_{code_file.stem}.py"
+        prepared.write_text(code, encoding="utf-8")
+        try:
+            proc = _render_manim(prepared, args.quality, outdir, [])
+        finally:
+            prepared.unlink(missing_ok=True)
+
+        video = _find_video(outdir) if proc.returncode == 0 else None
+        result = {
+            "ok": proc.returncode == 0,
+            "quality": args.quality,
+            "returncode": proc.returncode,
+            "video": str(video) if video else None,
+            "size_bytes": video.stat().st_size if video else None,
+        }
+        if proc.returncode != 0:
+            result["error"] = proc.stderr[-2000:]
+        result = _add_narration(result, audio_file, run, durations)
+        print(json.dumps(result, ensure_ascii=False))
+        return 0 if result.get("ok") else 1
+    except Exception as exc:
+        print(json.dumps({"ok": False, "error": f"narration failed: {exc}", "audio": False}, ensure_ascii=False))
+        return 1
 
 
 def cmd_validate(args: argparse.Namespace) -> int:
