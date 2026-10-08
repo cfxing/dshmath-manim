@@ -530,7 +530,7 @@ def cmd_render_code(args: argparse.Namespace) -> int:
     }
     if proc.returncode != 0:
         result["error"] = proc.stderr[-2000:]
-    result = _add_narration(result, args.narration, outdir, args.tts_url, args.tts_model, args.tts_voice)
+    result = _add_narration(result, args.narration, outdir, args.tts_url, args.tts_model, args.tts_voice, args.tts_speed)
     print(json.dumps(result))
     return 0 if proc.returncode == 0 else 1
 
