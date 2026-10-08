@@ -25,6 +25,7 @@ export interface Config {
   outdir?: string
   ttsModel?: string
   ttsVoice?: string
+  ttsSpeed?: number
 }
 
 /** 同名 Schema：Cordis 加载插件时据此校验配置并填充默认值 */
@@ -32,6 +33,7 @@ export const Config: Schema<Config> = Schema.object({
   outdir: Schema.string(),
   ttsModel: Schema.string(),
   ttsVoice: Schema.string(),
+  ttsSpeed: Schema.number(),
 })
 
 export function apply(ctx: Context, config: Config) {
@@ -99,7 +101,8 @@ export function apply(ctx: Context, config: Config) {
           description: 'Optional Chinese narration. When provided, Qwen3-TTS audio is generated and muxed into the MP4.',
         },
         tts_model: { type: 'string', description: 'Optional TTS model name.' },
-        tts_voice: { type: 'string', description: 'Optional Qwen3-TTS voice, default Vivian.' },
+        tts_voice: { type: 'string', description: 'Optional Qwen3-TTS speaker. Chinese presets: Vivian, Serena, Uncle_Fu, Dylan, Eric; default Vivian.' },
+        tts_speed: { type: 'number', description: 'Qwen3-TTS playback speed multiplier. 1.0=normal, 0.97≈3% slower, 1.03≈3% faster. Range 0.5-2.0.' },
         outdir: { type: 'string', description: 'Output directory. Defaults to plugin out/.' },
       },
       output: {
@@ -123,6 +126,7 @@ export function apply(ctx: Context, config: Config) {
             narration: args.narration,
             ttsModel: args.tts_model ?? config.ttsModel,
             ttsVoice: args.tts_voice ?? config.ttsVoice,
+            ttsSpeed: args.tts_speed ?? config.ttsSpeed,
           },
           exec.signal,
         )
@@ -148,7 +152,8 @@ export function apply(ctx: Context, config: Config) {
         outdir: { type: 'string', description: 'Output directory. Defaults to plugin out/.' },
         narration: { type: 'string', description: 'Optional narration text to synthesize with Qwen3-TTS and mux into the MP4.' },
         tts_model: { type: 'string', description: 'Optional TTS model name.' },
-        tts_voice: { type: 'string', description: 'Optional Qwen3-TTS voice.' },
+        tts_voice: { type: 'string', description: 'Optional Qwen3-TTS speaker. Chinese presets: Vivian, Serena, Uncle_Fu, Dylan, Eric.' },
+        tts_speed: { type: 'number', description: 'Qwen3-TTS playback speed multiplier. 1.0=normal, 0.97≈3% slower, 1.03≈3% faster. Range 0.5-2.0.' },
       },
       output: {
         schema: { type: 'object', additionalProperties: true },
@@ -169,6 +174,7 @@ export function apply(ctx: Context, config: Config) {
           narration: args.narration,
           ttsModel: args.tts_model ?? config.ttsModel,
           ttsVoice: args.tts_voice ?? config.ttsVoice,
+          ttsSpeed: args.tts_speed ?? config.ttsSpeed,
         }, exec.signal)
         if (!res.data) {
           throw new Error(`render_math_code: ${res.stderrTail ?? 'no output'}`)
