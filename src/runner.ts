@@ -13,6 +13,8 @@ import { dirname, join } from 'node:path'
 const __dirname = dirname(fileURLToPath(import.meta.url))
 // 打包后 dist/runner.js -> ../py/manim_runner.py
 export const RUNNER_PATH = join(__dirname, '..', 'py', 'manim_runner.py')
+const DEFAULT_TTS_VOICE = 'Serena'
+const DEFAULT_TTS_SPEED = 0.97
 
 export interface RenderRequest {
   /** 模板名，如 function_plot */
@@ -146,8 +148,8 @@ export async function renderScene(req: RenderRequest, signal?: AbortSignal): Pro
   if (req.narration) args.push('--narration', req.narration)
   if (req.ttsUrl) args.push('--tts-url', req.ttsUrl)
   if (req.ttsModel) args.push('--tts-model', req.ttsModel)
-  if (req.ttsVoice) args.push('--tts-voice', req.ttsVoice)
-  if (req.ttsSpeed != null) args.push('--tts-speed', String(req.ttsSpeed))
+  if (req.narration) args.push('--tts-voice', req.ttsVoice ?? DEFAULT_TTS_VOICE)
+  if (req.narration) args.push('--tts-speed', String(req.ttsSpeed ?? DEFAULT_TTS_SPEED))
   return runProcess(args, signal, TIMEOUT_MS, JSON.stringify(req.params ?? {}))
 }
 
@@ -164,8 +166,8 @@ export async function renderCode(req: RenderCodeRequest, signal?: AbortSignal): 
     if (req.narration) args.push('--narration', req.narration)
     if (req.ttsUrl) args.push('--tts-url', req.ttsUrl)
     if (req.ttsModel) args.push('--tts-model', req.ttsModel)
-    if (req.ttsVoice) args.push('--tts-voice', req.ttsVoice)
-    if (req.ttsSpeed != null) args.push('--tts-speed', String(req.ttsSpeed))
+    if (req.narration) args.push('--tts-voice', req.ttsVoice ?? DEFAULT_TTS_VOICE)
+    if (req.narration) args.push('--tts-speed', String(req.ttsSpeed ?? DEFAULT_TTS_SPEED))
     return await runProcess(args, signal)
   } finally {
     rmSync(tmp, { force: true })

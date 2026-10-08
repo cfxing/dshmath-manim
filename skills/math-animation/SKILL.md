@@ -49,9 +49,9 @@ whenToUse: 用户描述了数学对象（函数、导数、积分、几何、极
 1. 每一个动画步骤对应一个旁白句段，按动画发生顺序排列。
 2. 旁白使用自然的课堂口语，短句、清晰、少书面套话。
 3. 不要使用 Edge TTS 的 voice 名称（例如 `zh-CN-XiaoxiaoNeural`）或 `rate=-3%`。本插件使用本地 Qwen3-TTS。
-4. 默认音色使用 `Vivian`；需要更温和的女声时使用 `Serena`，男声优先尝试 `Dylan`。
-5. 默认语速为 `1.0`；如果需要比正常速度慢约 3%，使用 `tts_speed=0.97`。
-6. **必须优先使用 `narration_segments`**，每个元素对应一个动画步骤。插件会逐句调用 Qwen3-TTS，用 ffprobe 测量实际时长，并自动加入 0.9 秒间隔，生成唯一的 `RUN` 时间轴。
+4. 所有旁白段统一使用 `Serena`，不要在不同 segment 之间切换音色。
+5. 默认语速为 `0.97`；速度在 TTS 生成后由 FFmpeg `atempo` 处理，不传给 Qwen3-TTS。
+6. **必须优先使用 `narration_segments`**，每个元素对应一个动画步骤。插件启动一次 Qwen3-TTS worker、加载一次 1.7B 模型，循环生成各段 WAV；再用 ffprobe 测量实际时长，并自动加入 0.9 秒间隔，生成唯一的 `RUN` 时间轴。
 7. 不要自行猜测 RUN 数值。RUN 必须由实际 TTS 音频时长计算得到。
 
 对于自由 Manim 场景：

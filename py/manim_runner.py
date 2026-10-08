@@ -48,7 +48,8 @@ NUMPY_DANGEROUS_ATTRS = {
 VIDEO_EXTENSIONS = (".mp4", ".webm", ".mov")
 DEFAULT_TTS_URL = "http://127.0.0.1:8000/v1/audio/speech"
 DEFAULT_TTS_MODEL = "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice"
-DEFAULT_TTS_VOICE = "Vivian"
+DEFAULT_TTS_VOICE = "Serena"
+DEFAULT_TTS_SPEED = 0.97
 QWEN_TTS_ADAPTER = Path(__file__).resolve().parent / "qwen3_tts_runner.py"
 
 
@@ -298,8 +299,49 @@ def _tts_url(url: str | None) -> str:
     return (url or os.environ.get("QWEN3_TTS_URL") or DEFAULT_TTS_URL).rstrip("/")
 
 
-def _request_local_tts(text: str, model: str | None, voice: str | None) -> tuple[bytes, str]:
-    """Run the locally installed qwen-tts package in its own Python environment."""
+class _QwenTTSWorker:
+    """One persistent Qwen3-TTS process, shared by all narration segments."""
+
+    def __init__(self, model: str, language: str):
+        qwen_python = os.environ.get("QWEN3_TTS_PYTHON", "/home/sangfor/miniconda3/envs/qwen3-tts/bin/python")
+        if not Path(qwen_python).exists():
+            qwen_python = sys.executable
+        self.process = subprocess.Popen(
+            [qwen_python, "-u", str(QWEN_TTS_ADAPTER)],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            text=True, bufsize=1,
+            env={**os.environ, "NUMBA_DISABLE_JIT": "1", "QWEN3_TTS_MODEL": model,
+                 "QWEN3_TTS_LANGUAGE": language},
+        )
+
+    def synthesize(self, text: str, output: Path, voice: str, language: str) -> None:
+        if self.process.stdin is None or self.process.stdout is None:
+            raise RuntimeError("Qwen3-TTS worker pipes are unavailable")
+        self.process.stdin.write(json.dumps({
+            "text": text, "voice": voice, "language": language, "output": str(output),
+        }, ensure_ascii=False) + "\n")
+        self.process.stdin.flush()
+        line = self.process.stdout.readline()
+        if not line:
+            stderr = self.process.stderr.read()[-1600:] if self.process.stderr else ""
+            raise RuntimeError(f"Qwen3-TTS worker exited before responding: {stderr}")
+        response = json.loads(line)
+        if not response.get("ok"):
+            raise RuntimeError(response.get("error", "Qwen3-TTS worker failed"))
+
+    def close(self) -> None:
+        if self.process.stdin:
+            self.process.stdin.close()
+        try:
+            self.process.wait(timeout=30)
+        except subprocess.TimeoutExpired:
+            self.process.kill()
+            self.process.wait()
+
+
+def _request_local_tts(text: str, model: str | None, voice: str | None,
+                       worker: _QwenTTSWorker | None = None) -> tuple[bytes, str]:
+    """Run local Qwen3-TTS, optionally through a shared persistent worker."""
     qwen_python = os.environ.get("QWEN3_TTS_PYTHON", "/home/sangfor/miniconda3/envs/qwen3-tts/bin/python")
     if not Path(qwen_python).exists():
         qwen_python = sys.executable
@@ -307,29 +349,29 @@ def _request_local_tts(text: str, model: str | None, voice: str | None) -> tuple
     os.close(fd)
     output = Path(name)
     try:
-        proc = subprocess.run(
-            [qwen_python, str(QWEN_TTS_ADAPTER)],
-            input=json.dumps({
-                "model": model or os.environ.get("QWEN3_TTS_MODEL") or DEFAULT_TTS_MODEL,
-                "text": text,
-                "voice": voice or os.environ.get("QWEN3_TTS_VOICE") or DEFAULT_TTS_VOICE,
-                "language": os.environ.get("QWEN3_TTS_LANGUAGE", "Chinese"),
-                "output": str(output),
-            }),
-            capture_output=True, text=True, timeout=300,
-            # librosa bundled in some qwen-tts environments has an invalid
-            # numba cache locator; disabling numba JIT here affects only the
-            # import-time audio helper, not PyTorch model inference.
-            env={**os.environ, "NUMBA_DISABLE_JIT": "1"},
-        )
-        if proc.returncode != 0 or not output.exists():
-            raise RuntimeError(f"local qwen-tts failed: {proc.stderr[-1600:]}")
+        selected_model = model or os.environ.get("QWEN3_TTS_MODEL") or DEFAULT_TTS_MODEL
+        selected_voice = voice or os.environ.get("QWEN3_TTS_VOICE") or DEFAULT_TTS_VOICE
+        language = os.environ.get("QWEN3_TTS_LANGUAGE", "Chinese")
+        if worker is not None:
+            worker.synthesize(text, output, selected_voice, language)
+        else:
+            proc = subprocess.run(
+                [qwen_python, str(QWEN_TTS_ADAPTER)], capture_output=True, text=True, timeout=300,
+                env={**os.environ, "NUMBA_DISABLE_JIT": "1", "QWEN3_TTS_MODEL": selected_model},
+                input=json.dumps({"text": text, "voice": selected_voice,
+                                  "language": language, "output": str(output)}) + "\n",
+            )
+            if proc.returncode != 0 or not output.exists():
+                raise RuntimeError(f"local qwen-tts failed: {proc.stderr[-1600:]}")
+        if not output.exists():
+            raise RuntimeError("local qwen-tts produced no WAV output")
         return output.read_bytes(), "audio/wav"
     finally:
         output.unlink(missing_ok=True)
 
 
-def _request_tts(text: str, url: str | None, model: str | None, voice: str | None) -> tuple[bytes, str]:
+def _request_tts(text: str, url: str | None, model: str | None, voice: str | None,
+                 worker: _QwenTTSWorker | None = None) -> tuple[bytes, str]:
     """Use local qwen-tts by default; optionally support an HTTP endpoint.
 
     The OpenAI-compatible endpoint returns audio bytes.  The local desktop route
@@ -338,7 +380,7 @@ def _request_tts(text: str, url: str | None, model: str | None, voice: str | Non
     """
     # URL is deliberately opt-in. The normal path directly invokes qwen-tts.
     if not url and not os.environ.get("QWEN3_TTS_URL"):
-        return _request_local_tts(text, model, voice)
+        return _request_local_tts(text, model, voice, worker)
     endpoint = _tts_url(url)
     if endpoint.endswith("/api/tts/synthesize"):
         payload = {"text": text, "format": "base64"}
@@ -480,17 +522,30 @@ def _prepare_narration(narration: str, outdir: Path, tts_url: str | None,
     work = Path(tempfile.mkdtemp(prefix="dsh_narration_", dir=outdir))
     normalized: list[Path] = []
     durations: list[float] = []
-    for i, segment in enumerate(segments):
-        audio, content_type = _request_tts(segment, tts_url, tts_model, tts_voice)
-        suffix = ".mp3" if "mpeg" in content_type else ".wav"
-        raw = work / f"{i:03d}_raw{suffix}"
-        wav = work / f"{i:03d}.wav"
-        raw.write_bytes(audio)
-        _set_audio_speed(raw, tts_speed)
-        _normalize_audio(raw, wav)
-        duration = _ffprobe_duration(wav)
-        durations.append(duration)
-        normalized.append(wav)
+    worker = None
+    if not tts_url and not os.environ.get("QWEN3_TTS_URL"):
+        worker = _QwenTTSWorker(
+            tts_model or os.environ.get("QWEN3_TTS_MODEL") or DEFAULT_TTS_MODEL,
+            os.environ.get("QWEN3_TTS_LANGUAGE", "Chinese"),
+        )
+    try:
+        for i, segment in enumerate(segments):
+            # The caller supplies one voice for the complete narration; do not
+            # allow per-segment data to introduce a different speaker.
+            audio, content_type = _request_tts(segment, tts_url, tts_model,
+                                                tts_voice or DEFAULT_TTS_VOICE, worker)
+            suffix = ".mp3" if "mpeg" in content_type else ".wav"
+            raw = work / f"{i:03d}_raw{suffix}"
+            wav = work / f"{i:03d}.wav"
+            raw.write_bytes(audio)
+            _set_audio_speed(raw, tts_speed)
+            _normalize_audio(raw, wav)
+            duration = _ffprobe_duration(wav)
+            durations.append(duration)
+            normalized.append(wav)
+    finally:
+        if worker is not None:
+            worker.close()
 
     run = [d + (GAP if i < len(durations) - 1 else 0.0)
            for i, d in enumerate(durations)]
@@ -553,7 +608,7 @@ def _add_narration(result: dict, audio_file: Path | None, run: list[float] | Non
 def render_scene(template: str, params: dict, quality: str = "low", outdir: str | Path | None = None,
                  narration: str | None = None, tts_url: str | None = None,
                  tts_model: str | None = None, tts_voice: str | None = None,
-                 tts_speed: float = 1.0) -> dict:
+                 tts_speed: float = DEFAULT_TTS_SPEED) -> dict:
     """Render a template scene. Narration is synthesized first so its timing can be measured."""
     templates = _load_templates()
     if template not in templates:
@@ -712,7 +767,7 @@ def main(argv: list[str] | None = None) -> int:
     p_render.add_argument("--tts-url", default="", help="Qwen3-TTS OpenAI-compatible endpoint")
     p_render.add_argument("--tts-model", default="", help="Qwen3-TTS model name")
     p_render.add_argument("--tts-voice", default="", help="Qwen3-TTS speaker name")
-    p_render.add_argument("--tts-speed", type=float, default=1.0, help="Qwen3-TTS playback speed multiplier (0.5-2.0)")
+    p_render.add_argument("--tts-speed", type=float, default=DEFAULT_TTS_SPEED, help="Qwen3-TTS playback speed multiplier (0.5-2.0)")
     p_render.set_defaults(func=cmd_render)
 
     p_render_code = sub.add_parser("render-code", help="render an existing scene python file")
@@ -723,7 +778,7 @@ def main(argv: list[str] | None = None) -> int:
     p_render_code.add_argument("--tts-url", default="", help="Qwen3-TTS OpenAI-compatible endpoint")
     p_render_code.add_argument("--tts-model", default="", help="Qwen3-TTS model name")
     p_render_code.add_argument("--tts-voice", default="", help="Qwen3-TTS speaker name")
-    p_render_code.add_argument("--tts-speed", type=float, default=1.0, help="Qwen3-TTS playback speed multiplier (0.5-2.0)")
+    p_render_code.add_argument("--tts-speed", type=float, default=DEFAULT_TTS_SPEED, help="Qwen3-TTS playback speed multiplier (0.5-2.0)")
     p_render_code.set_defaults(func=cmd_render_code)
 
     args = parser.parse_args(argv)

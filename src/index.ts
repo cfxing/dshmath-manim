@@ -108,7 +108,7 @@ export function apply(ctx: Context, config: Config) {
         },
         tts_model: { type: 'string', description: 'Optional TTS model name.' },
         tts_voice: { type: 'string', description: 'Optional Qwen3-TTS speaker. Chinese presets: Vivian, Serena, Uncle_Fu, Dylan, Eric; default Serena.' },
-        tts_speed: { type: 'number', description: 'Qwen3-TTS playback speed multiplier. Default 0.97. 1.0=normal, 0.97≈3% slower, 1.03≈3% faster. Range 0.5-2.0.' },
+        tts_speed: { type: 'number', description: 'Playback speed applied after Qwen3-TTS with FFmpeg atempo. Default 0.97. 1.0=normal, 0.97≈3% slower, 1.03≈3% faster. Range 0.5-2.0.' },
         outdir: { type: 'string', description: 'Output directory. Defaults to plugin out/.' },
       },
       output: {
@@ -160,7 +160,7 @@ export function apply(ctx: Context, config: Config) {
         narration: { type: 'string', description: 'Optional narration text to synthesize with Qwen3-TTS and mux into the MP4.' },
         tts_model: { type: 'string', description: 'Optional TTS model name.' },
         tts_voice: { type: 'string', description: 'Optional Qwen3-TTS speaker. Chinese presets: Vivian, Serena, Uncle_Fu, Dylan, Eric.' },
-        tts_speed: { type: 'number', description: 'Qwen3-TTS playback speed multiplier. 1.0=normal, 0.97≈3% slower, 1.03≈3% faster. Range 0.5-2.0.' },
+        tts_speed: { type: 'number', description: 'Playback speed applied after Qwen3-TTS with FFmpeg atempo. Default 0.97. Range 0.5-2.0.' },
       },
       output: {
         schema: { type: 'object', additionalProperties: true },
