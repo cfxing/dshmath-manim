@@ -380,8 +380,27 @@ def _request_tts(text: str, url: str | None, model: str | None, voice: str | Non
     return data, content_type
 
 
+def _set_audio_speed(audio_file: Path, speed: float) -> None:
+    """Adjust generated speech speed after synthesis; Qwen itself has no Edge-style rate field."""
+    if speed == 1.0:
+        return
+    if not 0.5 <= speed <= 2.0:
+        raise ValueError(f"tts_speed must be between 0.5 and 2.0, got {speed}")
+    tmp = audio_file.with_name(audio_file.stem + "_speed" + audio_file.suffix)
+    proc = subprocess.run(
+        ["ffmpeg", "-y", "-i", str(audio_file), "-filter:a", f"atempo={speed:g}",
+         "-ar", "24000", "-ac", "1", str(tmp)],
+        capture_output=True, text=True, timeout=120,
+    )
+    if proc.returncode != 0 or not tmp.exists():
+        tmp.unlink(missing_ok=True)
+        raise RuntimeError(f"ffmpeg audio speed adjustment failed: {proc.stderr[-1200:]}")
+    tmp.replace(audio_file)
+
+
 def _mux_narration(video: Path, narration: str, outdir: Path, tts_url: str | None,
-                   tts_model: str | None, tts_voice: str | None) -> tuple[Path, Path]:
+                   tts_model: str | None, tts_voice: str | None,
+                   tts_speed: float = 1.0) -> tuple[Path, Path]:
     """Generate narration and mux it into the rendered video."""
     audio, content_type = _request_tts(narration, tts_url, tts_model, tts_voice)
     audio_suffix = ".mp3" if "mpeg" in content_type else ".wav"
@@ -391,6 +410,7 @@ def _mux_narration(video: Path, narration: str, outdir: Path, tts_url: str | Non
     muxed = video.with_name(f"{video.stem}_narrated{video.suffix}")
     try:
         audio_file.write_bytes(audio)
+        _set_audio_speed(audio_file, tts_speed)
         proc = subprocess.run(
             ["ffmpeg", "-y", "-i", str(video), "-i", str(audio_file),
              "-map", "0:v:0", "-map", "1:a:0", "-c:v", "copy", "-c:a", "aac",
@@ -406,7 +426,8 @@ def _mux_narration(video: Path, narration: str, outdir: Path, tts_url: str | Non
 
 
 def _add_narration(result: dict, narration: str | None, outdir: Path, tts_url: str | None,
-                   tts_model: str | None, tts_voice: str | None) -> dict:
+                   tts_model: str | None, tts_voice: str | None,
+                   tts_speed: float = 1.0) -> dict:
     if not result.get("ok") or not result.get("video") or not narration or not narration.strip():
         return result
     try:
@@ -423,7 +444,8 @@ def _add_narration(result: dict, narration: str | None, outdir: Path, tts_url: s
 
 def render_scene(template: str, params: dict, quality: str = "low", outdir: str | Path | None = None,
                  narration: str | None = None, tts_url: str | None = None,
-                 tts_model: str | None = None, tts_voice: str | None = None) -> dict:
+                 tts_model: str | None = None, tts_voice: str | None = None,
+                 tts_speed: float = 1.0) -> dict:
     """渲染一个模板场景，返回结果 dict（不打印）。供 CLI / wizard / TS 桥接共用。"""
     templates = _load_templates()
     if template not in templates:
@@ -466,7 +488,7 @@ def render_scene(template: str, params: dict, quality: str = "low", outdir: str 
         }
         if proc.returncode != 0:
             result["error"] = proc.stderr[-2000:]
-        return _add_narration(result, narration, out, tts_url, tts_model, tts_voice)
+        return _add_narration(result, narration, out, tts_url, tts_model, tts_voice, tts_speed)
 
 
 def cmd_render(args: argparse.Namespace) -> int:
@@ -480,7 +502,7 @@ def cmd_render(args: argparse.Namespace) -> int:
         print(json.dumps({"ok": False, "error": f"invalid params JSON: {exc}"}))
         return 2
     result = render_scene(args.template, params, args.quality, args.outdir,
-                          args.narration, args.tts_url, args.tts_model, args.tts_voice)
+                          args.narration, args.tts_url, args.tts_model, args.tts_voice, args.tts_speed)
     print(json.dumps(result, ensure_ascii=False))
     return 0 if result.get("ok") else 2 if "unknown template" in str(result.get("error", "")) else 1
 
@@ -549,7 +571,8 @@ def main(argv: list[str] | None = None) -> int:
     p_render.add_argument("--narration", default="", help="optional narration text")
     p_render.add_argument("--tts-url", default="", help="Qwen3-TTS OpenAI-compatible endpoint")
     p_render.add_argument("--tts-model", default="", help="Qwen3-TTS model name")
-    p_render.add_argument("--tts-voice", default="", help="Qwen3-TTS voice name")
+    p_render.add_argument("--tts-voice", default="", help="Qwen3-TTS speaker name")
+    p_render.add_argument("--tts-speed", type=float, default=1.0, help="Qwen3-TTS playback speed multiplier (0.5-2.0)")
     p_render.set_defaults(func=cmd_render)
 
     p_render_code = sub.add_parser("render-code", help="render an existing scene python file")
@@ -559,7 +582,8 @@ def main(argv: list[str] | None = None) -> int:
     p_render_code.add_argument("--narration", default="", help="optional narration text")
     p_render_code.add_argument("--tts-url", default="", help="Qwen3-TTS OpenAI-compatible endpoint")
     p_render_code.add_argument("--tts-model", default="", help="Qwen3-TTS model name")
-    p_render_code.add_argument("--tts-voice", default="", help="Qwen3-TTS voice name")
+    p_render_code.add_argument("--tts-voice", default="", help="Qwen3-TTS speaker name")
+    p_render_code.add_argument("--tts-speed", type=float, default=1.0, help="Qwen3-TTS playback speed multiplier (0.5-2.0)")
     p_render_code.set_defaults(func=cmd_render_code)
 
     args = parser.parse_args(argv)
