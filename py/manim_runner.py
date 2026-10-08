@@ -398,32 +398,138 @@ def _set_audio_speed(audio_file: Path, speed: float) -> None:
     tmp.replace(audio_file)
 
 
-def _mux_narration(video: Path, narration: str, outdir: Path, tts_url: str | None,
-                   tts_model: str | None, tts_voice: str | None,
-                   tts_speed: float = 1.0) -> tuple[Path, Path]:
-    """Generate narration and mux it into the rendered video."""
-    audio, content_type = _request_tts(narration, tts_url, tts_model, tts_voice)
-    audio_suffix = ".mp3" if "mpeg" in content_type else ".wav"
-    audio_fd, audio_name = tempfile.mkstemp(prefix="qwen3_tts_", suffix=audio_suffix, dir=outdir)
-    os.close(audio_fd)
-    audio_file = Path(audio_name)
-    muxed = video.with_name(f"{video.stem}_narrated{video.suffix}")
+def _ffprobe_duration(path: Path) -> float:
+    """Return the real decoded duration reported by ffprobe."""
+    proc = subprocess.run(
+        ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+         "-of", "default=noprint_wrappers=1:nokey=1", str(path)],
+        capture_output=True, text=True, timeout=30,
+    )
+    if proc.returncode != 0:
+        raise RuntimeError(f"ffprobe duration failed: {proc.stderr[-1000:]}")
     try:
-        audio_file.write_bytes(audio)
-        _set_audio_speed(audio_file, tts_speed)
+        duration = float(proc.stdout.strip())
+    except ValueError as exc:
+        raise RuntimeError(f"ffprobe returned invalid duration: {proc.stdout!r}") from exc
+    if duration <= 0:
+        raise RuntimeError(f"invalid audio duration: {duration}")
+    return duration
+
+
+def _normalize_audio(src: Path, dst: Path) -> None:
+    """Normalize a TTS segment to the canonical 24 kHz mono WAV format."""
+    proc = subprocess.run(
+        ["ffmpeg", "-y", "-i", str(src), "-ar", "24000", "-ac", "1",
+         "-c:a", "pcm_s16le", str(dst)],
+        capture_output=True, text=True, timeout=120,
+    )
+    if proc.returncode != 0 or not dst.exists():
+        raise RuntimeError(f"ffmpeg audio normalize failed: {proc.stderr[-1200:]}")
+
+
+def _make_silence(path: Path, duration: float) -> None:
+    proc = subprocess.run(
+        ["ffmpeg", "-y", "-f", "lavfi", "-i",
+         "anullsrc=r=24000:cl=mono", "-t", f"{duration:.6f}",
+         "-c:a", "pcm_s16le", str(path)],
+        capture_output=True, text=True, timeout=60,
+    )
+    if proc.returncode != 0 or not path.exists():
+        raise RuntimeError(f"ffmpeg silence generation failed: {proc.stderr[-1000:]}")
+
+
+def _concat_wavs(files: list[Path], output: Path) -> None:
+    """Concatenate normalized WAVs without re-encoding."""
+    concat = output.with_suffix(".concat.txt")
+    try:
+        lines = []
+        for path in files:
+            escaped = str(path).replace("'", "'\\''")
+            lines.append(f"file '{escaped}'")
+        concat.write_text("\n".join(lines) + "\n", encoding="utf-8")
         proc = subprocess.run(
-            ["ffmpeg", "-y", "-i", str(video), "-i", str(audio_file),
-             "-map", "0:v:0", "-map", "1:a:0", "-c:v", "copy", "-c:a", "aac",
-             "-af", "apad", "-shortest", "-movflags", "+faststart", str(muxed)],
+            ["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", str(concat),
+             "-c:a", "pcm_s16le", "-ar", "24000", "-ac", "1", str(output)],
             capture_output=True, text=True, timeout=180,
         )
-        if proc.returncode != 0:
-            muxed.unlink(missing_ok=True)
-            raise RuntimeError(f"ffmpeg audio mux failed: {proc.stderr[-1200:]}")
-        return muxed, audio_file
+        if proc.returncode != 0 or not output.exists():
+            raise RuntimeError(f"ffmpeg audio concat failed: {proc.stderr[-1200:]}")
     finally:
-        audio_file.unlink(missing_ok=True)
+        concat.unlink(missing_ok=True)
 
+
+def _prepare_narration(narration: str, outdir: Path, tts_url: str | None,
+                       tts_model: str | None, tts_voice: str | None,
+                       tts_speed: float = 1.0) -> tuple[Path, list[float], list[float]]:
+    """Synthesize narration before Manim and build the canonical RUN time axis."""
+    try:
+        parsed = json.loads(narration)
+    except (json.JSONDecodeError, TypeError):
+        parsed = narration
+
+    if isinstance(parsed, str):
+        segments = [parsed.strip()] if parsed.strip() else []
+    elif isinstance(parsed, list):
+        segments = [str(x).strip() for x in parsed if str(x).strip()]
+    else:
+        raise ValueError("narration must be a string or a JSON array of strings")
+    if not segments:
+        raise ValueError("narration is empty")
+
+    GAP = 0.9
+    work = Path(tempfile.mkdtemp(prefix="dsh_narration_", dir=outdir))
+    normalized: list[Path] = []
+    durations: list[float] = []
+    for i, segment in enumerate(segments):
+        audio, content_type = _request_tts(segment, tts_url, tts_model, tts_voice)
+        suffix = ".mp3" if "mpeg" in content_type else ".wav"
+        raw = work / f"{i:03d}_raw{suffix}"
+        wav = work / f"{i:03d}.wav"
+        raw.write_bytes(audio)
+        _set_audio_speed(raw, tts_speed)
+        _normalize_audio(raw, wav)
+        duration = _ffprobe_duration(wav)
+        durations.append(duration)
+        normalized.append(wav)
+
+    run = [d + (GAP if i < len(durations) - 1 else 0.0)
+           for i, d in enumerate(durations)]
+    pieces: list[Path] = []
+    for i, wav in enumerate(normalized):
+        pieces.append(wav)
+        if i < len(normalized) - 1:
+            silence = work / f"{i:03d}_gap.wav"
+            _make_silence(silence, GAP)
+            pieces.append(silence)
+
+    narration_wav = work / "narration.wav"
+    _concat_wavs(pieces, narration_wav)
+    final_audio = outdir / "narration.wav"
+    final_audio.write_bytes(narration_wav.read_bytes())
+    return final_audio, run, durations
+
+
+def _inject_run(code: str, run: list[float]) -> str:
+    """Inject the canonical RUN into a custom Manim scene."""
+    literal = "RUN = " + repr([round(x, 6) for x in run]) + "\n"
+    pattern = re.compile(r"(?m)^RUN\s*=\s*\[[^\n]*\]\s*$")
+    if pattern.search(code):
+        return pattern.sub(literal.rstrip(), code, count=1)
+    return literal + code
+
+
+def _mux_narration(video: Path, audio_file: Path) -> tuple[Path, Path]:
+    muxed = video.with_name(f"{video.stem}_narrated{video.suffix}")
+    proc = subprocess.run(
+        ["ffmpeg", "-y", "-i", str(video), "-i", str(audio_file),
+         "-map", "0:v:0", "-map", "1:a:0", "-c:v", "copy", "-c:a", "aac",
+         "-af", "apad", "-shortest", "-movflags", "+faststart", str(muxed)],
+        capture_output=True, text=True, timeout=180,
+    )
+    if proc.returncode != 0:
+        muxed.unlink(missing_ok=True)
+        raise RuntimeError(f"ffmpeg audio mux failed: {proc.stderr[-1200:]}")
+    return muxed, audio_file
 
 def _add_narration(result: dict, narration: str | None, outdir: Path, tts_url: str | None,
                    tts_model: str | None, tts_voice: str | None,
