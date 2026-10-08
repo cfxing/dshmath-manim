@@ -29,6 +29,7 @@ export interface RenderRequest {
   ttsModel?: string
   ttsVoice?: string
   ttsSpeed?: number
+  narrationSegments?: string[]
 }
 
 export interface RenderCodeRequest {
@@ -164,6 +165,7 @@ export async function renderCode(req: RenderCodeRequest, signal?: AbortSignal): 
     if (req.ttsUrl) args.push('--tts-url', req.ttsUrl)
     if (req.ttsModel) args.push('--tts-model', req.ttsModel)
     if (req.ttsVoice) args.push('--tts-voice', req.ttsVoice)
+    if (req.ttsSpeed != null) args.push('--tts-speed', String(req.ttsSpeed))
     return await runProcess(args, signal)
   } finally {
     rmSync(tmp, { force: true })
