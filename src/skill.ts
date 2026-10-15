@@ -1,7 +1,7 @@
 /**
- * skill.ts — 数学动画技能（Skill）注册。
+ * skill.ts — 学习动画技能（Skill）注册。
  *
- * 面向“只懂数学物理、不需要了解实现细节”的用户。
+ * 面向“不需要了解实现细节”的各科用户。
  * 插件在加载时向 ctx.skills 注册 skills/ 目录下的全部技能。
  *
  * 产品层技能：
@@ -87,23 +87,35 @@ export function listSkills(): MathAnimationSkill[] {
   return out
 }
 
+function registerSkill(ctx: Context, name: string, userInvocable: boolean): void {
+  const file = join(SKILLS_DIR, name, 'SKILL.md')
+  if (!existsSync(file)) return
+
+  const skill = parseSkillFile(file, name)
+  const registration: SkillRegistration = {
+    ...skill,
+    source: 'runtime',
+    provider: 'math-manim',
+    invocation: {
+      modelInvocable: skill.modelInvocable ?? true,
+      userInvocable: skill.userInvocable ?? userInvocable,
+    },
+  }
+  ctx.skills.register(registration)
+}
+
+/** 注册面向用户的学习动画技能。 */
+export function registerLearningAnimationSkills(ctx: Context): void {
+  registerSkill(ctx, 'learning-animation', true)
+}
+
 /**
  * 在运行时注册全部数学动画技能。
  * 数学动画和 Manim codegen 是内部实现技能；learning-animation 才是
  * 用户面向的产品入口。其余未来技能可通过 frontmatter 显式声明。
  */
 export function registerSkills(ctx: Context) {
-  for (const skill of listSkills()) {
-    const internalImplementation = skill.name === 'math-animation' || skill.name === 'manim-codegen'
-    const registration: SkillRegistration = {
-      ...skill,
-      source: 'runtime',
-      provider: 'math-manim',
-      invocation: {
-        modelInvocable: skill.modelInvocable ?? true,
-        userInvocable: skill.userInvocable ?? !internalImplementation,
-      },
-    }
-    ctx.skills.register(registration)
-  }
+  registerLearningAnimationSkills(ctx)
+  registerSkill(ctx, 'math-animation', false)
+  registerSkill(ctx, 'manim-codegen', false)
 }

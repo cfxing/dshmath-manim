@@ -13,7 +13,7 @@ import { dirname, join } from 'node:path'
 const __dirname = dirname(fileURLToPath(import.meta.url))
 // 打包后 dist/runner.js -> ../py/manim_runner.py
 export const RUNNER_PATH = join(__dirname, '..', 'py', 'manim_runner.py')
-const DEFAULT_TTS_VOICE = 'Serena'
+const DEFAULT_TTS_VOICE = 'zh-CN-XiaoxiaoNeural'
 const DEFAULT_TTS_SPEED = 0.97
 
 export interface RenderRequest {
@@ -25,7 +25,7 @@ export interface RenderRequest {
   quality?: string
   /** 输出目录（绝对路径） */
   outdir?: string
-  /** Optional narration text. When set, Qwen3-TTS audio is muxed into the MP4. */
+  /** Optional narration text. When set, edge-tts audio is muxed into the MP4. */
   narration?: string
   ttsUrl?: string
   ttsModel?: string
@@ -54,8 +54,13 @@ export interface RunnerResult {
   stderrTail?: string
 }
 
-/** 子进程默认超时：low=5min，其余 10min */
-const TIMEOUT_MS = 10 * 60 * 1000
+/**
+ * 子进程默认超时：要同时容纳「edge-tts 全部旁白合成 + Manim 渲染」。
+ * 可用 DSH_MATH_TIMEOUT_MS 覆盖。
+ */
+const DEFAULT_TIMEOUT_MS = 20 * 60 * 1000
+const ENV_TIMEOUT_MS = Number(process.env.DSH_MATH_TIMEOUT_MS)
+const TIMEOUT_MS = Number.isFinite(ENV_TIMEOUT_MS) && ENV_TIMEOUT_MS > 0 ? ENV_TIMEOUT_MS : DEFAULT_TIMEOUT_MS
 
 /** Python 解释器：可用 PYTHON_BIN 环境变量覆盖（如指向 venv 中的 python） */
 const PYTHON_BIN = process.env.PYTHON_BIN ?? 'python3'

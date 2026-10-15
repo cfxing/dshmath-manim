@@ -1,0 +1,41 @@
+{
+  "name": "learning_process",
+  "description": "Any subject: explain a concept as 2 to 5 ordered steps.",
+  "subject": "general",
+  "narration_steps_param": "steps",
+  "parameters": {
+    "title": {
+      "type": "string",
+      "required": true,
+      "description": "Short title"
+    },
+    "steps": {
+      "type": "array",
+      "required": true,
+      "minItems": 2,
+      "maxItems": 5,
+      "items": "string",
+      "description": "Two to five concise step descriptions"
+    }
+  },
+  "code": "from manim import *\nRUN = []\n\nclass LearningProcessScene(Scene):\n    def construct(self):\n        title = Text({{title}}, font_size=42).scale_to_fit_width(11).to_edge(UP)\n        steps = {{steps}}\n        if not 2 <= len(steps) <= 5 or not all(isinstance(x, str) and x.strip() for x in steps):\n            raise ValueError(\"steps must contain 2 to 5 non-empty strings\")\n        self.add(title)\n        previous = None\n        for i, step in enumerate(steps):\n            number = Text(str(i + 1), font_size=42, color=YELLOW)\n            body = Text(step, font_size=38).scale_to_fit_width(10)\n            card = VGroup(number, body).arrange(DOWN, buff=0.5).move_to(ORIGIN)\n            slot = RUN[i] if i < len(RUN) else 3.5\n            duration = min(1.4, slot * 0.5)\n            if previous is None:\n                self.play(FadeIn(card), run_time=duration)\n            else:\n                self.play(FadeOut(previous), FadeIn(card), run_time=duration)\n            self.wait(max(0, slot - duration))\n            previous = card\n",
+  "ui": {
+    "label": "通用：分步讲解",
+    "description": "适合生物、化学、地理等科目的概念和流程",
+    "fields": [
+      {
+        "key": "title",
+        "label": "主题",
+        "control": "text",
+        "hint": "例如 光合作用"
+      },
+      {
+        "key": "steps",
+        "label": "讲解步骤",
+        "control": "textarea",
+        "format": "lines",
+        "hint": "每行一步，2 到 5 步"
+      }
+    ]
+  }
+}

@@ -1,7 +1,7 @@
 /**
  * index.ts — dshmath-manim 插件入口。
  *
- * 注册一组数学动画工具（基于 Manim CE），模型可通过自然语言生成数学动画。
+ * 注册一组教学动画工具（基于 Manim CE），模型可通过自然语言生成各科动画。
  *
  * 用法（在 dsh 配置中加载）：
  *   - insert:
@@ -16,7 +16,7 @@ import { listTemplates, renderScene, renderCode, validateScene } from './runner.
 import { registerSkills } from './skill.js'
 
 export const name = 'dshmath-manim'
-export const description = 'Manim CE 数学动画插件：将数学概念渲染为动画视频（零代码技能包）'
+export const description = 'Manim CE 学习动画插件：将数学、物理、生物、化学等知识渲染为教学视频'
 
 export const inject = ['tools', 'skills']
 
@@ -33,7 +33,7 @@ export interface Config {
 export const Config: Schema<Config> = Schema.object({
   outdir: Schema.string(),
   ttsModel: Schema.string(),
-  ttsVoice: Schema.string().default("Serena"),
+  ttsVoice: Schema.string().default("zh-CN-XiaoxiaoNeural"),
   ttsSpeed: Schema.number().default(0.97),
 })
 
@@ -46,13 +46,13 @@ export function apply(ctx: Context, config: Config) {
   registerSkills(ctx)
 
   // ---------------------------------------------------------------------
-  // list_templates — 列出可用数学模板及参数模式
+  // list_templates — 列出可用教学模板及参数模式
   // ---------------------------------------------------------------------
   ctx.tools.register(
     defineTool({
       name: 'list_math_templates',
       description:
-        'List available math animation templates (function plots, derivatives, integrals, geometry, polar, 3D surfaces). Use this first to discover what the math plugin can render.',
+        'List available educational animation templates, including math, biology cells, chemical reactions, and general step-by-step explanations. Use this first to find a suitable scene.',
       parameters: {},
       output: {
         schema: { type: 'object', additionalProperties: true },
@@ -64,7 +64,7 @@ export function apply(ctx: Context, config: Config) {
               .map(([pk]) => pk)
             return `- ${k}: ${v?.description ?? ''}${required.length ? ` (required: ${required.join(', ')})` : ''}`
           })
-          return [{ type: 'text', text: `Available math templates:\n${lines.join('\n') || '(none)'}` }]
+          return [{ type: 'text', text: `Available animation templates:\n${lines.join('\n') || '(none)'}` }]
         },
       },
       async execute(_args, exec) {
@@ -78,19 +78,19 @@ export function apply(ctx: Context, config: Config) {
   )
 
   // ---------------------------------------------------------------------
-  // render_math_scene — 用模板渲染数学动画（推荐，安全）
+  // render_math_scene — 用模板渲染教学动画（推荐，安全）
   // ---------------------------------------------------------------------
   ctx.tools.register(
     defineTool({
       name: 'render_math_scene',
       description:
-        'Render a math animation video from a template. Pick a template with list_math_templates, then pass its parameters. Returns the video file path on success.',
+        'Render an educational animation video from a template. Supports math, biology cell structure, chemical reactions, and general learning processes. Pick a template with list_math_templates.',
       parameters: {
         template: { type: 'string', required: true, description: 'Template name, e.g. "function_plot"' },
         params: {
           type: 'object',
           additionalProperties: true,
-          description: 'Template parameters as a JSON object, e.g. {"functions": ["np.sin(x)", "x**2"]}',
+          description: 'Template parameters as a JSON object; see list_math_templates for the selected template schema.',
         },
         quality: {
           type: 'string',
@@ -104,23 +104,21 @@ export function apply(ctx: Context, config: Config) {
         },
         narration: {
           type: 'string',
-          description: 'Optional Chinese narration. When provided, Qwen3-TTS audio is generated and muxed into the MP4.',
+          description: 'Optional Chinese narration. When provided, edge-tts audio using Xiaoxiao is generated and muxed into the MP4.',
         },
-        tts_model: { type: 'string', description: 'Optional TTS model name.' },
-        tts_voice: { type: 'string', description: 'Optional Qwen3-TTS speaker. Chinese presets: Vivian, Serena, Uncle_Fu, Dylan, Eric; default Serena.' },
-        tts_speed: { type: 'number', description: 'Playback speed applied after Qwen3-TTS with FFmpeg atempo. Default 0.97. 1.0=normal, 0.97≈3% slower, 1.03≈3% faster. Range 0.5-2.0.' },
+        tts_model: { type: 'string', description: 'Deprecated and ignored; edge-tts does not use a local model.' },
+        tts_voice: { type: 'string', description: 'Optional edge-tts voice; default zh-CN-XiaoxiaoNeural (晓晓).' },
+        tts_speed: { type: 'number', description: 'Playback speed applied with FFmpeg atempo. Default 0.97. Range 0.5-2.0.' },
         outdir: { type: 'string', description: 'Output directory. Defaults to plugin out/.' },
       },
       output: {
         schema: { type: 'object', additionalProperties: true },
-        render: (_args, value: any) => [
-          {
-            type: 'text',
-            text: value?.ok
-              ? `Rendered ${value.template} to ${value.video} (${(value.size_bytes ?? 0) / 1024} KB, quality=${value.quality})`
-              : `Render failed: ${value?.error ?? 'unknown error'}`,
-          },
-        ],
+        render: (_args, value: any) => {
+          const base = value?.ok
+            ? `Rendered ${value.template} to ${value.video} (${(value.size_bytes ?? 0) / 1024} KB, quality=${value.quality})`
+            : `Render failed: ${value?.error ?? 'unknown error'}`
+          return [{ type: 'text', text: value?.timing_warning ? `${base}\n⚠️ ${value.timing_warning}` : base }]
+        },
       },
       async execute(args, exec) {
         const res = await renderScene(
@@ -151,27 +149,25 @@ export function apply(ctx: Context, config: Config) {
     defineTool({
       name: 'render_math_code',
       description:
-        'Render an arbitrary Manim CE scene from model-written Python source. The code is statically safety-checked before running. Use this when no template fits; prefer render_math_scene otherwise.',
+        'Render a custom Manim CE educational scene from model-written Python source. Use for biology, chemistry or other subjects when no template fits; code is statically checked.',
       parameters: {
         code: { type: 'string', required: true, description: 'Complete Manim Python scene source code (class extending Scene).' },
         quality: { type: 'string', enum: ['low', 'medium', 'high', 'ultra'], description: 'Render quality. Default low.' },
         outdir: { type: 'string', description: 'Output directory. Defaults to plugin out/.' },
         narration_segments: { type: 'array', items: { type: 'string' }, description: 'Optional segmented Chinese narration; one sentence per animation step.' },
-        narration: { type: 'string', description: 'Optional narration text to synthesize with Qwen3-TTS and mux into the MP4.' },
-        tts_model: { type: 'string', description: 'Optional TTS model name.' },
-        tts_voice: { type: 'string', description: 'Optional Qwen3-TTS speaker. Chinese presets: Vivian, Serena, Uncle_Fu, Dylan, Eric.' },
-        tts_speed: { type: 'number', description: 'Playback speed applied after Qwen3-TTS with FFmpeg atempo. Default 0.97. Range 0.5-2.0.' },
+        narration: { type: 'string', description: 'Optional narration text to synthesize with edge-tts and mux into the MP4.' },
+        tts_model: { type: 'string', description: 'Deprecated and ignored; edge-tts does not use a local model.' },
+        tts_voice: { type: 'string', description: 'Optional edge-tts voice; default zh-CN-XiaoxiaoNeural (晓晓).' },
+        tts_speed: { type: 'number', description: 'Playback speed applied with FFmpeg atempo. Default 0.97. Range 0.5-2.0.' },
       },
       output: {
         schema: { type: 'object', additionalProperties: true },
-        render: (_args, value: any) => [
-          {
-            type: 'text',
-            text: value?.ok
-              ? `Rendered custom scene to ${value.video}`
-              : `Render failed: ${value?.error ?? 'unknown error'}`,
-          },
-        ],
+        render: (_args, value: any) => {
+          const base = value?.ok
+            ? `Rendered custom scene to ${value.video}`
+            : `Render failed: ${value?.error ?? 'unknown error'}`
+          return [{ type: 'text', text: value?.timing_warning ? `${base}\n⚠️ ${value.timing_warning}` : base }]
+        },
       },
       async execute(args, exec) {
         const res = await renderCode({

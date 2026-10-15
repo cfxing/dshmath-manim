@@ -18,6 +18,7 @@
   "files": [
     "dist/",
     "py/",
+    "requirements.txt",
     "skills/",
     "math-manim.cordis.yml",
     "README.md"

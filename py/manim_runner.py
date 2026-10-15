@@ -15,16 +15,14 @@ from __future__ import annotations
 
 import argparse
 import ast
-import base64
-import binascii
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
-import urllib.error
-import urllib.request
+import time
 from pathlib import Path
 
 TEMPLATES_DIR = Path(__file__).resolve().parent / "templates"
@@ -46,11 +44,9 @@ NUMPY_DANGEROUS_ATTRS = {
 }
 
 VIDEO_EXTENSIONS = (".mp4", ".webm", ".mov")
-DEFAULT_TTS_URL = "http://127.0.0.1:8000/v1/audio/speech"
-DEFAULT_TTS_MODEL = "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice"
-DEFAULT_TTS_VOICE = "Serena"
+DEFAULT_TTS_VOICE = "zh-CN-XiaoxiaoNeural"
 DEFAULT_TTS_SPEED = 0.97
-QWEN_TTS_ADAPTER = Path(__file__).resolve().parent / "qwen3_tts_runner.py"
+EDGE_TTS_TIMEOUT = 180
 
 
 def _banner() -> dict:
@@ -115,6 +111,15 @@ def _validate_template_params(meta: dict, params: dict) -> list[str]:
             errors.append(f"parameter '{key}' must be a boolean, got {type(value).__name__}")
         elif typ == "array" and not isinstance(value, list):
             errors.append(f"parameter '{key}' must be an array, got {type(value).__name__}")
+        elif typ == "array" and isinstance(value, list):
+            minimum = spec.get("minItems")
+            maximum = spec.get("maxItems")
+            if minimum is not None and len(value) < minimum:
+                errors.append(f"parameter '{key}' needs at least {minimum} items")
+            if maximum is not None and len(value) > maximum:
+                errors.append(f"parameter '{key}' allows at most {maximum} items")
+            if spec.get("items") == "string" and not all(isinstance(item, str) and item.strip() for item in value):
+                errors.append(f"parameter '{key}' must contain non-empty strings")
     unknown = set(params) - set(schema)
     if unknown:
         errors.append(f"unknown parameters: {sorted(unknown)}")
@@ -295,135 +300,32 @@ def _find_video(outdir: Path) -> Path | None:
     return None
 
 
-def _tts_url(url: str | None) -> str:
-    return (url or os.environ.get("QWEN3_TTS_URL") or DEFAULT_TTS_URL).rstrip("/")
-
-
-class _QwenTTSWorker:
-    """One persistent Qwen3-TTS process, shared by all narration segments."""
-
-    def __init__(self, model: str, language: str):
-        qwen_python = os.environ.get("QWEN3_TTS_PYTHON", "/home/sangfor/miniconda3/envs/qwen3-tts/bin/python")
-        if not Path(qwen_python).exists():
-            qwen_python = sys.executable
-        self.process = subprocess.Popen(
-            [qwen_python, "-u", str(QWEN_TTS_ADAPTER)],
-            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            text=True, bufsize=1,
-            env={**os.environ, "NUMBA_DISABLE_JIT": "1", "QWEN3_TTS_MODEL": model,
-                 "QWEN3_TTS_LANGUAGE": language},
+def _request_tts(text: str, voice: str | None, output: Path) -> tuple[bytes, str]:
+    """Synthesize one segment with edge-tts; local Qwen TTS is intentionally disabled."""
+    selected_voice = voice or os.environ.get("EDGE_TTS_VOICE") or DEFAULT_TTS_VOICE
+    try:
+        proc = subprocess.run(
+            [sys.executable, "-m", "edge_tts", "--text", text,
+             "--voice", selected_voice, "--write-media", str(output)],
+            capture_output=True, text=True,
+            timeout=float(os.environ.get("EDGE_TTS_TIMEOUT", EDGE_TTS_TIMEOUT)),
         )
-
-    def synthesize(self, text: str, output: Path, voice: str, language: str) -> None:
-        if self.process.stdin is None or self.process.stdout is None:
-            raise RuntimeError("Qwen3-TTS worker pipes are unavailable")
-        self.process.stdin.write(json.dumps({
-            "text": text, "voice": voice, "language": language, "output": str(output),
-        }, ensure_ascii=False) + "\n")
-        self.process.stdin.flush()
-        line = self.process.stdout.readline()
-        if not line:
-            stderr = self.process.stderr.read()[-1600:] if self.process.stderr else ""
-            raise RuntimeError(f"Qwen3-TTS worker exited before responding: {stderr}")
-        response = json.loads(line)
-        if not response.get("ok"):
-            raise RuntimeError(response.get("error", "Qwen3-TTS worker failed"))
-
-    def close(self) -> None:
-        if self.process.stdin:
-            self.process.stdin.close()
-        try:
-            self.process.wait(timeout=30)
-        except subprocess.TimeoutExpired:
-            self.process.kill()
-            self.process.wait()
-
-
-def _request_local_tts(text: str, model: str | None, voice: str | None,
-                       worker: _QwenTTSWorker | None = None) -> tuple[bytes, str]:
-    """Run local Qwen3-TTS, optionally through a shared persistent worker."""
-    qwen_python = os.environ.get("QWEN3_TTS_PYTHON", "/home/sangfor/miniconda3/envs/qwen3-tts/bin/python")
-    if not Path(qwen_python).exists():
-        qwen_python = sys.executable
-    fd, name = tempfile.mkstemp(prefix="qwen3_tts_", suffix=".wav")
-    os.close(fd)
-    output = Path(name)
-    try:
-        selected_model = model or os.environ.get("QWEN3_TTS_MODEL") or DEFAULT_TTS_MODEL
-        selected_voice = voice or os.environ.get("QWEN3_TTS_VOICE") or DEFAULT_TTS_VOICE
-        language = os.environ.get("QWEN3_TTS_LANGUAGE", "Chinese")
-        if worker is not None:
-            worker.synthesize(text, output, selected_voice, language)
-        else:
-            proc = subprocess.run(
-                [qwen_python, str(QWEN_TTS_ADAPTER)], capture_output=True, text=True, timeout=300,
-                env={**os.environ, "NUMBA_DISABLE_JIT": "1", "QWEN3_TTS_MODEL": selected_model},
-                input=json.dumps({"text": text, "voice": selected_voice,
-                                  "language": language, "output": str(output)}) + "\n",
-            )
-            if proc.returncode != 0 or not output.exists():
-                raise RuntimeError(f"local qwen-tts failed: {proc.stderr[-1600:]}")
-        if not output.exists():
-            raise RuntimeError("local qwen-tts produced no WAV output")
-        return output.read_bytes(), "audio/wav"
-    finally:
-        output.unlink(missing_ok=True)
-
-
-def _request_tts(text: str, url: str | None, model: str | None, voice: str | None,
-                 worker: _QwenTTSWorker | None = None) -> tuple[bytes, str]:
-    """Use local qwen-tts by default; optionally support an HTTP endpoint.
-
-    The OpenAI-compatible endpoint returns audio bytes.  The local desktop route
-    returns either audio bytes or {"audio": "<base64>"}; supporting both keeps the
-    plugin usable with the two server launch modes commonly used for Qwen3-TTS.
-    """
-    # URL is deliberately opt-in. The normal path directly invokes qwen-tts.
-    if not url and not os.environ.get("QWEN3_TTS_URL"):
-        return _request_local_tts(text, model, voice, worker)
-    endpoint = _tts_url(url)
-    if endpoint.endswith("/api/tts/synthesize"):
-        payload = {"text": text, "format": "base64"}
-    else:
-        payload = {
-            "model": model or os.environ.get("QWEN3_TTS_MODEL") or DEFAULT_TTS_MODEL,
-            "input": text,
-            "voice": voice or os.environ.get("QWEN3_TTS_VOICE") or DEFAULT_TTS_VOICE,
-            "response_format": "wav",
-        }
-    request = urllib.request.Request(
-        endpoint,
-        data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-        headers={"Content-Type": "application/json", "Accept": "audio/wav, audio/mpeg, application/json"},
-        method="POST",
-    )
-    try:
-        with urllib.request.urlopen(request, timeout=180) as response:
-            data = response.read()
-            content_type = response.headers.get_content_type()
-    except urllib.error.HTTPError as exc:
-        detail = exc.read().decode("utf-8", errors="replace")[-1000:]
-        raise RuntimeError(f"Qwen3-TTS HTTP {exc.code}: {detail}") from exc
-    except urllib.error.URLError as exc:
-        raise RuntimeError(f"cannot connect to Qwen3-TTS at {endpoint}: {exc.reason}") from exc
-
-    if content_type == "application/json" or data[:1] in (b"{", b"["):
-        try:
-            body = json.loads(data.decode("utf-8"))
-            encoded = body.get("audio") or body.get("data")
-            if not encoded:
-                raise ValueError("response has no audio field")
-            data = base64.b64decode(encoded)
-            content_type = "audio/wav"
-        except (ValueError, KeyError, TypeError, binascii.Error) as exc:
-            raise RuntimeError(f"invalid Qwen3-TTS response: {exc}") from exc
-    if not data:
-        raise RuntimeError("Qwen3-TTS returned an empty audio response")
-    return data, content_type
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError("edge-tts request timed out; check network access") from exc
+    if proc.returncode != 0:
+        detail = proc.stderr or proc.stdout
+        if "No module named edge_tts" in detail:
+            raise RuntimeError("edge-tts is not installed in the Python environment used by this plugin")
+        if "WSServerHandshakeError: 403" in detail:
+            raise RuntimeError("edge-tts speech service rejected the request (HTTP 403)")
+        raise RuntimeError(f"edge-tts synthesis failed: {detail[-500:]}")
+    if not output.exists() or output.stat().st_size == 0:
+        raise RuntimeError("edge-tts returned no audio")
+    return output.read_bytes(), "audio/mpeg"
 
 
 def _set_audio_speed(audio_file: Path, speed: float) -> None:
-    """Adjust generated speech speed after synthesis; Qwen itself has no Edge-style rate field."""
+    """Adjust generated speech speed after edge-tts synthesis."""
     if speed == 1.0:
         return
     if not 0.5 <= speed <= 2.0:
@@ -503,7 +405,7 @@ def _concat_wavs(files: list[Path], output: Path) -> None:
 def _prepare_narration(narration: str, outdir: Path, tts_url: str | None,
                        tts_model: str | None, tts_voice: str | None,
                        tts_speed: float = 1.0) -> tuple[Path, list[float], list[float]]:
-    """Synthesize narration before Manim and build the canonical RUN time axis."""
+    """Use edge-tts for narration and build the canonical RUN time axis."""
     try:
         parsed = json.loads(narration)
     except (json.JSONDecodeError, TypeError):
@@ -522,46 +424,40 @@ def _prepare_narration(narration: str, outdir: Path, tts_url: str | None,
     work = Path(tempfile.mkdtemp(prefix="dsh_narration_", dir=outdir))
     normalized: list[Path] = []
     durations: list[float] = []
-    worker = None
-    if not tts_url and not os.environ.get("QWEN3_TTS_URL"):
-        worker = _QwenTTSWorker(
-            tts_model or os.environ.get("QWEN3_TTS_MODEL") or DEFAULT_TTS_MODEL,
-            os.environ.get("QWEN3_TTS_LANGUAGE", "Chinese"),
-        )
     try:
+        print(f"[tts] synthesizing {len(segments)} narration segment(s) with edge-tts",
+              file=sys.stderr, flush=True)
         for i, segment in enumerate(segments):
-            # The caller supplies one voice for the complete narration; do not
-            # allow per-segment data to introduce a different speaker.
-            audio, content_type = _request_tts(segment, tts_url, tts_model,
-                                                tts_voice or DEFAULT_TTS_VOICE, worker)
-            suffix = ".mp3" if "mpeg" in content_type else ".wav"
-            raw = work / f"{i:03d}_raw{suffix}"
+            raw = work / f"{i:03d}_raw.mp3"
             wav = work / f"{i:03d}.wav"
-            raw.write_bytes(audio)
+            _request_tts(segment, tts_voice, raw)
             _set_audio_speed(raw, tts_speed)
             _normalize_audio(raw, wav)
             duration = _ffprobe_duration(wav)
             durations.append(duration)
             normalized.append(wav)
+            print(f"[tts] segment {i + 1}/{len(segments)} -> {duration:.2f}s",
+                  file=sys.stderr, flush=True)
+
+        run = [d + (GAP if i < len(durations) - 1 else 0.0)
+               for i, d in enumerate(durations)]
+        pieces: list[Path] = []
+        for i, wav in enumerate(normalized):
+            pieces.append(wav)
+            if i < len(normalized) - 1:
+                silence = work / f"{i:03d}_gap.wav"
+                _make_silence(silence, GAP)
+                pieces.append(silence)
+
+        narration_wav = work / "narration.wav"
+        _concat_wavs(pieces, narration_wav)
+        final_audio = outdir / "narration.wav"
+        final_audio.write_bytes(narration_wav.read_bytes())
+        print(f"[tts] narration ready: {sum(run):.2f}s of audio", file=sys.stderr, flush=True)
+        return final_audio, run, durations
     finally:
-        if worker is not None:
-            worker.close()
-
-    run = [d + (GAP if i < len(durations) - 1 else 0.0)
-           for i, d in enumerate(durations)]
-    pieces: list[Path] = []
-    for i, wav in enumerate(normalized):
-        pieces.append(wav)
-        if i < len(normalized) - 1:
-            silence = work / f"{i:03d}_gap.wav"
-            _make_silence(silence, GAP)
-            pieces.append(silence)
-
-    narration_wav = work / "narration.wav"
-    _concat_wavs(pieces, narration_wav)
-    final_audio = outdir / "narration.wav"
-    final_audio.write_bytes(narration_wav.read_bytes())
-    return final_audio, run, durations
+        # 早期版本把每个临时目录都留在输出目录里，失败几次就堆一片空目录。
+        shutil.rmtree(work, ignore_errors=True)
 
 
 def _inject_run(code: str, run: list[float]) -> str:
@@ -573,31 +469,83 @@ def _inject_run(code: str, run: list[float]) -> str:
     return literal + code
 
 
-def _mux_narration(video: Path, audio_file: Path) -> tuple[Path, Path]:
+RUN_USAGE_WARNING = (
+    "场景没有使用 RUN 时间轴：动画时长由代码里硬编码的 run_time/wait 决定，和旁白长度对不上。"
+    "请在每一步使用 RUN[i] 作为时间槽（例如 self.wait(max(0.0, RUN[i] - 本步动画已用时长))），"
+    "让第 i 步正好占用旁白第 i 段的时长。"
+)
+
+TEMPLATE_TIMING_WARNING = (
+    "模板动画时长由模板固定，不参与 RUN 时间轴，因此无法与旁白逐句对齐；"
+    "需要严格对齐请改用 render_math_code，并让每一步占用 RUN[i]。"
+)
+
+
+def _uses_run_timeline(code: str) -> bool:
+    """代码里是否真的在下标使用 RUN[i]（`RUN = [...]` 占位不算使用）。"""
+    return re.search(r"\bRUN\s*\[", code) is not None
+
+
+def _mux_narration(video: Path, audio_file: Path) -> tuple[Path, dict]:
+    """把旁白混入成片，并保证旁白不被剪短。
+
+    早期实现只有 `-af apad -shortest`：一旦动画比旁白短，-shortest 就在画面结束处
+    直接掐掉旁白。现场案例：9 段旁白共 75 秒，场景硬编码动画 34 秒，成片只播了
+    34 秒旁白（第 5 句中途被剪）。现在以旁白为准：画面偏短就冻结末帧补齐。
+    """
+    video_seconds = _ffprobe_duration(video)
+    audio_seconds = _ffprobe_duration(audio_file)
+    pad = max(0.0, audio_seconds - video_seconds)
     muxed = video.with_name(f"{video.stem}_narrated{video.suffix}")
-    proc = subprocess.run(
-        ["ffmpeg", "-y", "-i", str(video), "-i", str(audio_file),
-         "-map", "0:v:0", "-map", "1:a:0", "-c:v", "copy", "-c:a", "aac",
-         "-af", "apad", "-shortest", "-movflags", "+faststart", str(muxed)],
-        capture_output=True, text=True, timeout=180,
-    )
+    cmd = ["ffmpeg", "-y", "-i", str(video), "-i", str(audio_file),
+           "-map", "0:v:0", "-map", "1:a:0"]
+    if pad > 0.05:
+        # 冻结末帧补足画面，避免 -shortest 把旁白剪掉（需要重编码视频）。
+        cmd += ["-vf", f"tpad=stop_mode=clone:stop_duration={pad + 0.3:.3f}",
+                "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p"]
+    else:
+        cmd += ["-c:v", "copy"]
+    cmd += ["-c:a", "aac", "-af", "apad", "-shortest", "-movflags", "+faststart", str(muxed)]
+    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=900)
     if proc.returncode != 0:
         muxed.unlink(missing_ok=True)
         raise RuntimeError(f"ffmpeg audio mux failed: {proc.stderr[-1200:]}")
-    return muxed, audio_file
+    info = {
+        "video_seconds": round(video_seconds, 2),
+        "narration_seconds": round(audio_seconds, 2),
+    }
+    if pad > 0.05:
+        info["padded_seconds"] = round(pad, 2)
+        print(f"[tts] animation {video_seconds:.2f}s < narration {audio_seconds:.2f}s: "
+              f"freezing the last frame for {pad:.2f}s so the narration is not cut",
+              file=sys.stderr, flush=True)
+    return muxed, info
+
 
 def _add_narration(result: dict, audio_file: Path | None, run: list[float] | None,
-                   durations: list[float] | None) -> dict:
+                   durations: list[float] | None, uses_run: bool = True,
+                   note: str | None = None) -> dict:
     if not result.get("ok") or not result.get("video") or audio_file is None:
         return result
     try:
-        narrated, _ = _mux_narration(Path(result["video"]), audio_file)
+        narrated, info = _mux_narration(Path(result["video"]), audio_file)
         result["video"] = str(narrated)
         result["size_bytes"] = narrated.stat().st_size
         result["audio"] = True
         result["run"] = run or []
         result["narration_durations"] = durations or []
         result["narration_total"] = sum(run or [])
+        result.update(info)
+        warnings = []
+        if not uses_run:
+            warnings.append(note or RUN_USAGE_WARNING)
+        if info.get("padded_seconds"):
+            warnings.append(
+                f"动画只有 {info['video_seconds']}s，旁白有 {info['narration_seconds']}s，"
+                f"已冻结末帧补齐 {info['padded_seconds']}s 以保证旁白完整。"
+            )
+        if warnings:
+            result["timing_warning"] = " ".join(warnings)
     except Exception as exc:
         result["ok"] = False
         result["error"] = f"narration failed: {exc}"
@@ -617,6 +565,17 @@ def render_scene(template: str, params: dict, quality: str = "low", outdir: str 
     errors = _validate_template_params(meta, params)
     if errors:
         return {"ok": False, "error": "parameter validation failed", "details": errors}
+    if narration and narration.strip():
+        try:
+            parsed_narration = json.loads(narration)
+        except json.JSONDecodeError:
+            parsed_narration = narration
+        segment_count = len([s for s in parsed_narration if str(s).strip()]) if isinstance(parsed_narration, list) else 1
+        expected = meta.get("narration_steps")
+        if meta.get("narration_steps_param"):
+            expected = len(params[meta["narration_steps_param"]])
+        if expected is not None and segment_count != expected:
+            return {"ok": False, "error": f"template '{template}' needs {expected} narration segments, got {segment_count}"}
     try:
         code = _render_template(meta, params, meta["code"])
     except Exception as exc:
@@ -633,6 +592,7 @@ def render_scene(template: str, params: dict, quality: str = "low", outdir: str 
             audio_file, run, durations = _prepare_narration(
                 narration, out, tts_url, tts_model, tts_voice, tts_speed
             )
+            code = _inject_run(code, run)
 
         with tempfile.TemporaryDirectory() as tmp:
             scene_src = _SAFE_EVAL_SRC + "\n" + code
@@ -655,7 +615,9 @@ def render_scene(template: str, params: dict, quality: str = "low", outdir: str 
             }
             if proc.returncode != 0:
                 result["error"] = proc.stderr[-2000:]
-            return _add_narration(result, audio_file, run, durations)
+            return _add_narration(result, audio_file, run, durations,
+                                  uses_run=_uses_run_timeline(code),
+                                  note=TEMPLATE_TIMING_WARNING)
     except Exception as exc:
         return {"ok": False, "error": f"narration failed: {exc}", "audio": False}
 
@@ -692,6 +654,8 @@ def cmd_render_code(args: argparse.Namespace) -> int:
     audio_file = None
     run = None
     durations = None
+    # 注入前先判断模型是否真的把 RUN 当成时间槽在用（`RUN = [...]` 占位不算）。
+    uses_run = _uses_run_timeline(code)
     try:
         if args.narration and args.narration.strip():
             audio_file, run, durations = _prepare_narration(
@@ -722,7 +686,7 @@ def cmd_render_code(args: argparse.Namespace) -> int:
         }
         if proc.returncode != 0:
             result["error"] = proc.stderr[-2000:]
-        result = _add_narration(result, audio_file, run, durations)
+        result = _add_narration(result, audio_file, run, durations, uses_run=uses_run)
         print(json.dumps(result, ensure_ascii=False))
         return 0 if result.get("ok") else 1
     except Exception as exc:
@@ -764,10 +728,10 @@ def main(argv: list[str] | None = None) -> int:
     p_render.add_argument("--quality", default="low", choices=["low", "medium", "high", "ultra"])
     p_render.add_argument("--outdir", default=str(Path.cwd() / "out"))
     p_render.add_argument("--narration", default="", help="optional narration text")
-    p_render.add_argument("--tts-url", default="", help="Qwen3-TTS OpenAI-compatible endpoint")
-    p_render.add_argument("--tts-model", default="", help="Qwen3-TTS model name")
-    p_render.add_argument("--tts-voice", default="", help="Qwen3-TTS speaker name")
-    p_render.add_argument("--tts-speed", type=float, default=DEFAULT_TTS_SPEED, help="Qwen3-TTS playback speed multiplier (0.5-2.0)")
+    p_render.add_argument("--tts-url", default="", help="Deprecated and ignored; edge-tts is used directly")
+    p_render.add_argument("--tts-model", default="", help="Deprecated and ignored; edge-tts does not use a local model")
+    p_render.add_argument("--tts-voice", default="", help="edge-tts voice, default zh-CN-XiaoxiaoNeural")
+    p_render.add_argument("--tts-speed", type=float, default=DEFAULT_TTS_SPEED, help="Playback speed multiplier (0.5-2.0)")
     p_render.set_defaults(func=cmd_render)
 
     p_render_code = sub.add_parser("render-code", help="render an existing scene python file")
@@ -775,10 +739,10 @@ def main(argv: list[str] | None = None) -> int:
     p_render_code.add_argument("--quality", default="low", choices=["low", "medium", "high", "ultra"])
     p_render_code.add_argument("--outdir", default=str(Path.cwd() / "out"))
     p_render_code.add_argument("--narration", default="", help="optional narration text")
-    p_render_code.add_argument("--tts-url", default="", help="Qwen3-TTS OpenAI-compatible endpoint")
-    p_render_code.add_argument("--tts-model", default="", help="Qwen3-TTS model name")
-    p_render_code.add_argument("--tts-voice", default="", help="Qwen3-TTS speaker name")
-    p_render_code.add_argument("--tts-speed", type=float, default=DEFAULT_TTS_SPEED, help="Qwen3-TTS playback speed multiplier (0.5-2.0)")
+    p_render_code.add_argument("--tts-url", default="", help="Deprecated and ignored; edge-tts is used directly")
+    p_render_code.add_argument("--tts-model", default="", help="Deprecated and ignored; edge-tts does not use a local model")
+    p_render_code.add_argument("--tts-voice", default="", help="edge-tts voice, default zh-CN-XiaoxiaoNeural")
+    p_render_code.add_argument("--tts-speed", type=float, default=DEFAULT_TTS_SPEED, help="Playback speed multiplier (0.5-2.0)")
     p_render_code.set_defaults(func=cmd_render_code)
 
     args = parser.parse_args(argv)

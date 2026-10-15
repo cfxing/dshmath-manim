@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""wizard_server.py — 数学动画向导 Web 服务（零代码使用）。
+"""wizard_server.py — 教学动画向导 Web 服务（零代码使用）。
 
 面向只懂数学、不懂代码的用户：
   1. 从模板卡片选择场景（函数图像 / 导数切线 / 定积分 / 几何 / 极坐标 / 3D 曲面）
@@ -37,7 +37,7 @@ PAGE = """<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>数学动画向导 — Manim CE</title>
+<title>教学动画向导 — Manim CE</title>
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body {
@@ -105,8 +105,8 @@ PAGE = """<!DOCTYPE html>
 <body>
 <div class="container">
   <header>
-    <h1>数学动画向导</h1>
-    <p>选择场景，填写数学参数，即可生成教学动画 —— 全程无需任何代码</p>
+    <h1>教学动画向导</h1>
+    <p>选择场景，填写内容，即可生成教学动画 —— 全程无需任何代码</p>
   </header>
   <main>
     <section class="panel">
@@ -120,7 +120,7 @@ PAGE = """<!DOCTYPE html>
       </div>
       <div id="result" class="result">
         <h2>动画预览</h2>
-        <video id="video" controls autoplay loop muted></video>
+        <video id="video" controls></video>
         <a id="dl" class="dl-link" download>下载视频</a>
       </div>
     </section>
@@ -187,6 +187,19 @@ function selectTemplate(name) {
     }
     body.appendChild(wrap);
   });
+  if (t.narration_steps || t.narration_steps_param) {
+    const wrap = document.createElement('div');
+    wrap.className = 'field';
+    const label = document.createElement('label');
+    label.textContent = '中文旁白（可选，每行对应一个画面步骤）';
+    const input = document.createElement('textarea');
+    input.id = 'narrationSegments';
+    input.placeholder = t.narration_steps
+      ? '请填写 ' + t.narration_steps + ' 行，每行一段'
+      : '每个讲解步骤写一行旁白';
+    wrap.appendChild(label); wrap.appendChild(input);
+    body.appendChild(wrap);
+  }
   const actions = document.createElement('div');
   actions.className = 'actions';
   const btn = document.createElement('button');
@@ -215,6 +228,8 @@ function collectParams() {
     if (val === '') return;
     if (el.dataset.format === 'array') {
       val = val.split(',').map(s => parseFloat(s.trim()));
+    } else if (el.dataset.format === 'lines') {
+      val = val.split('\\n').map(s => s.trim()).filter(Boolean);
     } else if (el.type === 'number') {
       val = parseFloat(val);
     }
@@ -230,10 +245,14 @@ async function render() {
   status.className = 'status running';
   status.textContent = '提交渲染任务…';
   const params = collectParams();
+  const narration = document.getElementById('narrationSegments');
+  const narration_segments = narration
+    ? narration.value.split('\\n').map(s => s.trim()).filter(Boolean)
+    : [];
   const res = await fetch('/api/render', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ template: activeTemplate, params })
+    body: JSON.stringify({ template: activeTemplate, params, narration_segments })
   });
   const { task_id } = await res.json();
   status.textContent = '正在渲染（首次约 30~60 秒）…';
@@ -273,13 +292,16 @@ def _build_public_templates() -> dict:
             "name": name,
             "description": meta.get("description", ""),
             "ui": meta.get("ui", {}),
+            "narration_steps": meta.get("narration_steps"),
+            "narration_steps_param": meta.get("narration_steps_param"),
         }
     return public
 
 
-def _render_job(tid: str, template: str, params: dict) -> None:
+def _render_job(tid: str, template: str, params: dict, narration_segments: list[str]) -> None:
     try:
-        result = mr.render_scene(template, params, quality="low", outdir=OUTDIR)
+        narration = json.dumps(narration_segments, ensure_ascii=False) if narration_segments else None
+        result = mr.render_scene(template, params, quality="low", outdir=OUTDIR, narration=narration)
         if result.get("ok") and result.get("video"):
             video_path = Path(result["video"])
             rel = video_path.relative_to(OUTDIR)
@@ -364,6 +386,10 @@ class Handler(BaseHTTPRequestHandler):
                 return
             template = payload.get("template", "")
             params = payload.get("params", {})
+            narration_segments = payload.get("narration_segments", [])
+            if not isinstance(narration_segments, list) or not all(isinstance(s, str) for s in narration_segments):
+                self._send_json({"error": "narration_segments must be an array of strings"}, 400)
+                return
             templates = mr._load_templates()
             if template not in templates:
                 self._send_json({"error": f"unknown template: {template}"}, 400)
@@ -371,7 +397,7 @@ class Handler(BaseHTTPRequestHandler):
             tid = uuid.uuid4().hex[:12]
             with _tasks_lock:
                 _tasks[tid] = {"state": "running"}
-            _executor.submit(_render_job, tid, template, params)
+            _executor.submit(_render_job, tid, template, params, narration_segments)
             self._send_json({"task_id": tid})
         else:
             self._send_json({"error": "not found"}, 404)
@@ -382,7 +408,7 @@ def main() -> int:
     parser.add_argument("--port", type=int, default=8321)
     args = parser.parse_args()
     server = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
-    print(f"数学动画向导已启动: http://127.0.0.1:{args.port}")
+    print(f"教学动画向导已启动: http://127.0.0.1:{args.port}")
     print(f"输出目录: {OUTDIR}")
     try:
         server.serve_forever()

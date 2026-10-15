@@ -1,0 +1,61 @@
+{
+  "name": "chemical_reaction",
+  "description": "Chemistry: show reactants, reaction arrow and products in three stages.",
+  "subject": "chemistry",
+  "narration_steps": 3,
+  "parameters": {
+    "reactants": {
+      "type": "string",
+      "required": true,
+      "description": "Balanced reactants, e.g. 2H₂ + O₂"
+    },
+    "products": {
+      "type": "string",
+      "required": true,
+      "description": "Balanced products, e.g. 2H₂O"
+    },
+    "condition": {
+      "type": "string",
+      "required": false,
+      "default": "",
+      "description": "Optional reaction condition"
+    },
+    "title": {
+      "type": "string",
+      "required": false,
+      "default": "化学反应",
+      "description": "Video title"
+    }
+  },
+  "code": "from manim import *\nRUN = [3.5, 3.5, 3.5]\n\nclass ChemicalReactionScene(Scene):\n    def construct(self):\n        title = Text({{title}}, font_size=42).to_edge(UP)\n        reactants = Text({{reactants}}, font_size=40, color=BLUE).scale_to_fit_width(4.1).move_to(LEFT * 3.5)\n        products = Text({{products}}, font_size=40, color=GREEN).scale_to_fit_width(4.1).move_to(RIGHT * 3.5)\n        arrow = Arrow(LEFT * 0.9, RIGHT * 0.9, color=YELLOW)\n        react_label = Text(\"反应物\", font_size=28).next_to(reactants, DOWN)\n        product_label = Text(\"生成物\", font_size=28).next_to(products, DOWN)\n        condition = {{condition}}\n        slot = RUN[0] if len(RUN) > 0 else 3.5\n        duration = min(1.4, slot * 0.5)\n        self.play(FadeIn(title), FadeIn(reactants), FadeIn(react_label), run_time=duration)\n        self.wait(max(0, slot - duration))\n        slot = RUN[1] if len(RUN) > 1 else 3.5\n        duration = min(1.4, slot * 0.5)\n        self.play(GrowArrow(arrow), run_time=duration)\n        if condition:\n            condition_label = Text(condition, font_size=24).scale_to_fit_width(3).next_to(arrow, UP)\n            extra = min(0.6, max(0, slot - duration))\n            self.play(FadeIn(condition_label), run_time=extra)\n            duration += extra\n        self.wait(max(0, slot - duration))\n        slot = RUN[2] if len(RUN) > 2 else 3.5\n        duration = min(1.4, slot * 0.5)\n        self.play(FadeIn(products), FadeIn(product_label), run_time=duration)\n        self.wait(max(0, slot - duration))\n",
+  "ui": {
+    "label": "化学：反应过程",
+    "description": "分步展示反应物、反应条件和生成物",
+    "fields": [
+      {
+        "key": "reactants",
+        "label": "反应物",
+        "control": "text",
+        "hint": "例如 2H₂ + O₂"
+      },
+      {
+        "key": "products",
+        "label": "生成物",
+        "control": "text",
+        "hint": "例如 2H₂O"
+      },
+      {
+        "key": "condition",
+        "label": "反应条件",
+        "control": "text",
+        "hint": "可选，如 点燃"
+      },
+      {
+        "key": "title",
+        "label": "标题",
+        "control": "text",
+        "hint": "化学反应"
+      }
+    ]
+  }
+}

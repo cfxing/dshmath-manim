@@ -1,8 +1,8 @@
 # dshmath-manim
 
-DeepSeek Harness（dsh）数学动画插件 —— 基于 Manim CE 将数学概念渲染为动画视频，并可通过 Qwen3-TTS 自动添加旁白。
+DeepSeek Harness（dsh）学习动画插件 —— 基于 Manim CE 将数学、物理、生物、化学等知识渲染为视频，并可通过 edge-tts 自动添加晓晓旁白。
 
-「一切皆插件」：本插件以 Cordis 插件形式提供一组 **Tool**，模型通过自然语言即可生成数学动画。
+「一切皆插件」：本插件以 Cordis 插件形式提供一组 **Tool**，模型通过自然语言即可生成教学动画。
 
 ## 架构
 
@@ -34,29 +34,32 @@ dshmath-manim/
 │   └── runner.ts             # TS ⇄ Python 桥接（子进程 + 超时 + 安全环境）
 └── py/
     ├── manim_runner.py       # 渲染执行器（模板/校验/渲染，JSON 输出）
-    ├── templates/            # 数学动画模板
+    ├── templates/            # 教学动画模板
     │   ├── function_plot     # 函数绘图（一/二元函数）
     │   ├── derivative_tangent# 导数与切线（数值斜率）
     │   ├── definite_integral # 定积分（曲线下面积）
     │   ├── geometry          # 几何图形（三角形/圆/正多边形）
     │   ├── polar_plot        # 极坐标曲线（心形线等）
-    │   └── surface_3d        # 3D 曲面（ThreeDScene）
+    │   ├── surface_3d        # 3D 曲面（ThreeDScene）
+    │   ├── cell_structure    # 生物：动物/植物细胞结构
+    │   ├── chemical_reaction # 化学：反应物到生成物
+    │   └── learning_process  # 通用：2～5 步知识讲解
     └── examples/             # 自定义场景示例（走 render_math_code 自由代码路径）
         ├── spring_mass_oscillator.py  # 弹簧振荡（简谐运动，含 x(t) 轨迹同步）
         ├── spring_oscillator.py       # 弹簧振子（位移-时间）
         └── bouncing_ball.py           # 小球弹跳
 ```
 
-## 数学动画向导（零代码使用）
+## 教学动画向导（零代码使用）
 
-面向只懂数学、不懂代码的用户。启动后浏览器打开即可使用：
+面向不懂代码的用户。启动后浏览器打开即可使用：
 
 ```bash
 python3 py/wizard_server.py --port 8321
 # 打开 http://127.0.0.1:8321
 ```
 
-流程：选择场景卡片（函数图像/导数切线/定积分/几何/极坐标/3D 曲面）→ 填写数学参数（全中文表单）→ 点击「生成动画」→ 预览并下载视频。全程无任何代码。
+流程：选择场景卡片（包括细胞结构、化学反应、分步讲解）→ 填写参数（全中文表单）→ 点击「生成动画」→ 预览并下载视频。全程无任何代码。
 
 每个模板在 `py/templates/*.json` 中带有 `ui` 元数据（中文标签、参数提示、控件类型、下拉选项），向导页面由此自动生成表单。
 
@@ -67,27 +70,31 @@ python3 py/wizard_server.py --port 8321
 | `list_math_templates` | 列出模板与参数模式 | 开场发现能力 |
 | `render_math_scene` | 模板参数化渲染（安全） | 推荐路径 |
 | `render_math_code` | 渲染模型自写 Manim 场景 | 模板不匹配时 |
-
-两个渲染工具都支持可选的 `narration` 参数。传入中文讲稿后，插件默认请求
-本地调用已安装的 `qwen-tts` Python 包，使用
-`Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice` 和 `Vivian` 声音，并使用 ffmpeg 将音频合成到返回的 MP4。
-只有在确实部署了 HTTP 兼容服务时，才通过 `QWEN3_TTS_URL` 切换到远程调用模式。
 | `validate_math_code` | AST 静态安全校验 | 渲染前的自愈检查 |
+
+两个渲染工具都支持分段旁白。传入中文讲稿后，插件通过 `edge-tts` 使用
+`zh-CN-XiaoxiaoNeural`（晓晓）生成语音，再用 ffmpeg 合成 MP4。请先安装
+`edge-tts`（例如 `pip install -r requirements.txt`）。生物、化学和通用模板会
+按旁白段数安排画面时长：细胞结构和化学反应需要 3 段，通用模板每个步骤 1 段。
+
+生物、化学以示意图和流程动画为主；需要精细结构或实验过程时，学习动画技能会
+改用自定义 Manim 场景。化学式、条件与配平系数须先核对。
 
 ## 零代码技能包（Skill，核心推荐）
 
-插件加载时会自动向 `ctx.skills` 注册两个技能（`skills/<name>/SKILL.md`，每份都是一份完整提示词）：
+插件加载时会自动向 `ctx.skills` 注册三个技能（`skills/<name>/SKILL.md`）：
 
 | 技能 | 路径 | 定位 |
 |---|---|---|
 | `math-animation` | `skills/math-animation/` | **默认推荐**：模板路径。把模型训练成"数学动画翻译官"，口语 → 模板参数 → `render_math_scene` |
-| `manim-codegen` | `skills/manim-codegen/` | **进阶**：自由代码路径。模板无法表达时，模型直接编写 Manim 0.19 场景代码 → `validate_math_code` → `render_math_code`，实现多步动画、物体运动、图形变换、物理模拟等无限表现力 |
+| `learning-animation` | `skills/learning-animation/` | **用户入口**：根据科目选择模板或自定义场景，默认带中文旁白 |
+| `manim-codegen` | `skills/manim-codegen/` | **进阶**：模板无法表达时，编写 Manim 场景 → `validate_math_code` → `render_math_code` |
 
 **双轨自动决策**：`math-animation` 技能内置决策树，模板覆盖得了的需求走模板（安全、成功率高）；覆盖不了或连续失败时，自动加载 `manim-codegen` 切换自由代码。用户视角始终是零代码。
 
 ### 使用者视角（零代码，完全不用接触代码）
 
-在 dsh 对话中直接说数学/物理语言即可，例如：
+在 dsh 对话中直接说学习需求即可，例如：
 
 - 「画一个正弦函数和余弦函数在同一坐标系里的对比动画」
 - 「y=x² 在 x=1 处的切线，标出导数」
@@ -96,6 +103,9 @@ python3 py/wizard_server.py --port 8321
 - 「画心形线 r=1+cosθ」
 - 「画马鞍面 z=x²-y²，能旋转的」
 - 「弹簧振子的位移-时间图像」（物理 → 自动翻译为简谐运动曲线）
+- 「做一个动物细胞结构讲解视频」
+- 「讲解 2H₂ + O₂ → 2H₂O 的反应过程」
+- 「用动画解释光合作用的主要步骤」
 
 模型会加载技能 → 翻译成模板参数 → 调用 `render_math_scene` → 返回视频。超出模板时自动切换 `manim-codegen` 写代码渲染。技能内置：
 
@@ -123,7 +133,7 @@ mkdir -p ~/.dsh/skills && cp -r skills/math-animation skills/manim-codegen ~/.ds
 ### 1. Python 依赖
 
 ```bash
-pip install manim numpy
+pip install manim numpy -r requirements.txt
 ```
 
 ### 2. 独立验证 Python 后端（无需 dsh）
@@ -196,7 +206,7 @@ dsh plugin add ./dshmath-manim-0.1.0.tgz
 
 ### 使用者安装后的效果
 
-安装成功后，使用者只需在 dsh 对话中说数学/物理语言，例如「画一个蓝色三角形标 ∠ABC」或
+安装成功后，使用者只需在 dsh 对话中描述知识点，例如「画一个蓝色三角形标 ∠ABC」或
 「弹簧振子的动画」，模型会加载插件注册的两个技能（`math-animation` 模板路径 / `manim-codegen`
 自由代码路径）自动生成动画。**使用者侧无需安装任何 Python 依赖** —— 但渲染需要本机已安装
 `manim` + `numpy`（见上「Python 依赖」），或后续可内置自动检测提示。

@@ -13,6 +13,5 @@
       # config:
         # 渲染输出目录（可选，默认插件包内 out/）
         # outdir: ./math-videos
-        # Qwen3-TTS 本地模型参数（可选）
-        # ttsModel: Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice
-        # ttsVoice: Vivian
+        # edge-tts 参数（可选；默认使用晓晓）
+        # ttsVoice: zh-CN-XiaoxiaoNeural

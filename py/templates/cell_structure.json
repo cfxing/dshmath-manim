@@ -1,0 +1,48 @@
+{
+  "name": "cell_structure",
+  "description": "Biology: explain animal or plant cell structures in three stages.",
+  "subject": "biology",
+  "narration_steps": 3,
+  "parameters": {
+    "cell_type": {
+      "type": "string",
+      "required": false,
+      "default": "animal",
+      "description": "animal or plant"
+    },
+    "title": {
+      "type": "string",
+      "required": false,
+      "default": "细胞的结构",
+      "description": "Video title"
+    }
+  },
+  "code": "from manim import *\nRUN = [3.5, 3.5, 3.5]\n\nclass CellStructureScene(Scene):\n    def construct(self):\n        cell_type = {{cell_type}}\n        title = Text({{title}}, font_size=42).to_edge(UP)\n        is_plant = cell_type == \"plant\"\n        if is_plant:\n            wall = RoundedRectangle(width=6.4, height=3.9, corner_radius=0.25, color=GREEN)\n            membrane = RoundedRectangle(width=5.9, height=3.4, corner_radius=0.4, color=TEAL)\n            outline = VGroup(wall, membrane)\n            first_label = \"细胞壁与细胞膜\"\n        else:\n            outline = Ellipse(width=6.4, height=3.9, color=TEAL)\n            first_label = \"细胞膜\"\n        nucleus = Circle(radius=0.62, color=PURPLE, fill_opacity=0.5).shift(LEFT * 0.5)\n        if is_plant:\n            organelles = VGroup(\n                Ellipse(width=1.2, height=0.42, color=GREEN, fill_opacity=0.7).shift(LEFT * 1.8 + UP * 0.8),\n                Ellipse(width=1.2, height=0.42, color=GREEN, fill_opacity=0.7).shift(RIGHT * 1.8 + DOWN * 0.8),\n                Ellipse(width=1.5, height=0.9, color=BLUE, fill_opacity=0.3).shift(RIGHT * 0.8),\n            )\n            organelle_label = \"叶绿体与液泡：各有功能\"\n        else:\n            organelles = VGroup(\n                Ellipse(width=0.75, height=0.3, color=ORANGE, fill_opacity=0.7).shift(RIGHT * 1.5 + UP * 0.8),\n                Ellipse(width=0.75, height=0.3, color=ORANGE, fill_opacity=0.7).shift(RIGHT * 1.2 + DOWN * 0.8),\n                Ellipse(width=0.75, height=0.3, color=ORANGE, fill_opacity=0.7).shift(LEFT * 1.9 + DOWN * 0.7),\n            )\n            organelle_label = \"线粒体等细胞器：承担不同功能\"\n        label = Text(first_label, font_size=30).to_edge(DOWN)\n        slot = RUN[0] if len(RUN) > 0 else 3.5\n        duration = min(1.4, slot * 0.5)\n        self.play(FadeIn(title), Create(outline), FadeIn(label), run_time=duration)\n        self.wait(max(0, slot - duration))\n        next_label = Text(\"细胞核：储存遗传信息\", font_size=30).to_edge(DOWN)\n        slot = RUN[1] if len(RUN) > 1 else 3.5\n        duration = min(1.4, slot * 0.5)\n        self.play(FadeIn(nucleus), Transform(label, next_label), run_time=duration)\n        self.wait(max(0, slot - duration))\n        last_label = Text(organelle_label, font_size=30).to_edge(DOWN)\n        slot = RUN[2] if len(RUN) > 2 else 3.5\n        duration = min(1.4, slot * 0.5)\n        self.play(FadeIn(organelles), Transform(label, last_label), run_time=duration)\n        self.wait(max(0, slot - duration))\n",
+  "ui": {
+    "label": "生物：细胞结构",
+    "description": "分步展示细胞膜、细胞核与细胞器",
+    "fields": [
+      {
+        "key": "cell_type",
+        "label": "细胞类型",
+        "control": "select",
+        "options": [
+          {
+            "value": "animal",
+            "label": "动物细胞"
+          },
+          {
+            "value": "plant",
+            "label": "植物细胞"
+          }
+        ]
+      },
+      {
+        "key": "title",
+        "label": "标题",
+        "control": "text",
+        "hint": "细胞的结构"
+      }
+    ]
+  }
+}
