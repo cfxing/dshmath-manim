@@ -1,223 +1,263 @@
 # dshmath-manim
 
-DeepSeek Harness（dsh）数学动画插件 —— 基于 Manim CE 将数学概念渲染为动画视频，并可通过 Qwen3-TTS 自动添加旁白。
+**dshmath-manim** 是一个面向 [DeepSeek Harness（DSH）](https://github.com/cfxing/dshmath-manim) 的 Manim CE 数学与物理动画插件。用户用自然语言描述想学习的概念，Agent 通过插件工具和技能选择模板或编写 Manim 场景，生成动画视频；需要讲解时，还可以使用本地 Qwen3-TTS 生成中文旁白并与视频合成。
 
-「一切皆插件」：本插件以 Cordis 插件形式提供一组 **Tool**，模型通过自然语言即可生成数学动画。
+- **零代码使用**：用户不需要编写 Python 或 Manim 代码。
+- **模板优先**：常见数学可视化通过参数化模板生成。
+- **自由代码补充**：模板无法表达复杂分镜、运动或物理过程时，切换到 Manim 场景代码路径。
+- **中文旁白**：支持 Qwen3-TTS 本地合成、分段旁白、音频时长测量和视频合成。
+- **安全校验**：渲染前对自由场景代码进行 AST 静态检查。
 
-## 架构
+## 功能一览
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│  DeepSeek Harness (dsh)                                     │
-│  ┌───────────────────────────────────────────────────────┐  │
-│  │ dshmath-manim (TS / Cordis 插件)                     │  │
-│  │   tools: list_math_templates / render_math_scene      │  │
-│  │          render_math_code / validate_math_code        │  │
-│  └──────────────────────┬────────────────────────────────┘  │
-│                         │ spawn python3 (沙箱子进程)        │
-└─────────────────────────┼───────────────────────────────────┘
-                          ▼
-          py/manim_runner.py（渲染执行器）
-            ├── 模板系统（JSON 声明参数模式 + Python 场景代码）
-            ├── AST 静态安全校验（拦截 os/import/eval 等）
-            └── manim CLI 渲染（low/medium/high/ultra）
-```
+| 能力 | 说明 |
+|---|---|
+| 函数图像 | 绘制一条或多条函数曲线 |
+| 导数与切线 | 展示切线、切点及数值斜率 |
+| 定积分 | 展示曲线与坐标轴围成的面积 |
+| 平面几何 | 三角形、正方形、圆和正多边形等 |
+| 极坐标 | 心形线、玫瑰线、螺旋等 |
+| 三维曲面 | 绘制并观察 (z=f(x,y)) 曲面 |
+| 自定义动画 | 通过 Manim CE 场景表达多步动画、物体运动和物理过程 |
+| 中文旁白 | 使用本地 Qwen3-TTS 生成音频，并与 MP4 合成 |
 
-## 目录结构
+## 工作流程
 
-```
-dshmath-manim/
-├── math-manim.cordis.yml     # 插件加载配置
-├── package.json / tsconfig   # TS 插件（tools 注册）
-├── src/
-│   ├── index.ts              # 插件入口，注册 4 个工具
-│   └── runner.ts             # TS ⇄ Python 桥接（子进程 + 超时 + 安全环境）
-└── py/
-    ├── manim_runner.py       # 渲染执行器（模板/校验/渲染，JSON 输出）
-    ├── templates/            # 数学动画模板
-    │   ├── function_plot     # 函数绘图（一/二元函数）
-    │   ├── derivative_tangent# 导数与切线（数值斜率）
-    │   ├── definite_integral # 定积分（曲线下面积）
-    │   ├── geometry          # 几何图形（三角形/圆/正多边形）
-    │   ├── polar_plot        # 极坐标曲线（心形线等）
-    │   └── surface_3d        # 3D 曲面（ThreeDScene）
-    └── examples/             # 自定义场景示例（走 render_math_code 自由代码路径）
-        ├── spring_mass_oscillator.py  # 弹簧振荡（简谐运动，含 x(t) 轨迹同步）
-        ├── spring_oscillator.py       # 弹簧振子（位移-时间）
-        └── bouncing_ball.py           # 小球弹跳
+### 动画生成
+
+```text
+用户的自然语言需求
+        ↓
+math-animation 技能
+        ↓
+列出模板并选择合适的动画类型
+        ↓
+render_math_scene ── 模板能够表达时优先使用
+        │
+        └── 模板无法表达时使用 manim-codegen
+                         ↓
+                 静态校验与 Manim 渲染
+                         ↓
+                       MP4
 ```
 
-## 数学动画向导（零代码使用）
+### 带旁白的视频
 
-面向只懂数学、不懂代码的用户。启动后浏览器打开即可使用：
+带讲解的视频使用分段旁白，以便让音频与动画步骤对应：
+
+```text
+narration_segments
+        ↓
+Qwen3-TTS 逐段生成 WAV
+        ↓
+FFprobe 测量每段音频的实际时长
+        ↓
+在段落之间加入 0.9 秒间隔
+        ↓
+根据实际时长计算 RUN 时间轴
+        ↓
+Manim 按 RUN 安排动画步骤
+        ↓
+FFmpeg 将旁白与视频合成
+```
+
+时间轴应由生成后的真实音频时长计算，不应由 Agent 凭感觉填写。自由 Manim 场景可以使用全局 `RUN[i]` 表示第 i 个步骤的时间槽；渲染器会在支持的场景代码中注入或替换 RUN。
+
+## TTS 默认设置
+
+| 设置 | 默认值 | 说明 |
+|---|---|---|
+| 模型 | `Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice` | 本地 Qwen3-TTS CustomVoice 模型 |
+| 音色 | `Serena` | 所有旁白段统一使用同一音色 |
+| 语速 | `0.97` | 合成后由 FFmpeg `atempo` 调整，约比正常速度慢 3% |
+| 采样率 | `24000 Hz` | 规范化后的旁白音频格式 |
+| 段间间隔 | `0.9 秒` | 用于在相邻讲解步骤之间留出停顿 |
+
+Qwen3-TTS 的 `generate_custom_voice()` 不接收 `speed` 或 `rate` 参数。插件的 `tts_speed` 是生成后的音频处理设置，不会作为模型参数传入。
+
+> 语音合成需要本机安装并可运行 Qwen3-TTS 模型。若模型首次加载较慢，请先在目标 Conda 环境中单独验证模型和 GPU 推理。
+
+## 插件工具
+
+插件通过 Cordis 向 DSH 注册以下工具：
+
+| 工具 | 用途 |
+|---|---|
+| `list_math_templates` | 查询可用模板及参数定义 |
+| `render_math_scene` | 使用已定义模板和参数生成动画 |
+| `render_math_code` | 校验并渲染自定义 Manim 场景 |
+| `validate_math_code` | 对自定义场景进行 AST 静态安全检查 |
+
+渲染工具可接收讲稿；需要逐步同步动画时，优先提供 `narration_segments`，每个元素对应一个动画步骤。
+
+## 技能（Skills）
+
+插件包含两个技能：
+
+| 技能 | 路径 | 适用场景 |
+|---|---|---|
+| `math-animation` | `skills/math-animation/SKILL.md` | **默认路径**：把自然语言需求翻译为模板与参数 |
+| `manim-codegen` | `skills/manim-codegen/SKILL.md` | **进阶路径**：模板无法覆盖时生成自定义 Manim 场景 |
+
+技能采用模板优先策略。Agent 会先判断模板能否表达用户需求；只有模板不适用或渲染反复失败时，才切换到自由代码路径。用户始终可以使用自然语言描述需求。
+
+## 示例
+
+在 DSH 对话中，可以直接提出类似需求：
+
+- “绘制正弦函数和余弦函数在同一坐标系中的对比动画。”
+- “展示 (y=x^2) 在 (x=1) 处的切线，并讲解导数的含义。”
+- “用动画演示 (sin x) 从 (0) 到 (pi) 的定积分面积。”
+- “画一个三角形并标注角 ABC。”
+- “绘制极坐标心形线 (r=1+\cos\theta)。”
+- “展示马鞍面 (z=x^2-y^2)。”
+- “制作弹簧振子的运动动画，并配上中文讲解。”
+
+## 环境要求
+
+- DeepSeek Harness（DSH）及兼容的插件运行环境
+- Node.js 与 pnpm/npm，用于安装和构建 TypeScript 插件
+- Python 3
+- Manim Community Edition（CE）
+- NumPy
+- FFmpeg（提供 `ffmpeg` 和 `ffprobe`）
+- 需要中文旁白时：本地 `qwen-tts` Python 包、可用的 Qwen3-TTS 模型及兼容的 PyTorch/CUDA 环境
+
+建议将 DSH 插件运行环境与 Qwen3-TTS 的 Conda 环境分开管理。插件可以通过配置的 Python 解释器调用 Qwen3-TTS 环境；FFmpeg/FFprobe 可使用系统安装版本。请确保运行插件的进程能够找到所需的可执行文件。
+
+## 安装与运行
+
+### 1. 安装 Python 渲染依赖
+
+在用于 Manim 渲染的 Python 环境中安装：
 
 ```bash
-python3 py/wizard_server.py --port 8321
-# 打开 http://127.0.0.1:8321
+python3 -m pip install manim numpy
 ```
 
-流程：选择场景卡片（函数图像/导数切线/定积分/几何/极坐标/3D 曲面）→ 填写数学参数（全中文表单）→ 点击「生成动画」→ 预览并下载视频。全程无任何代码。
+如需 TTS，请在专门的 Qwen3-TTS 环境中按该模型及项目的安装说明安装 `qwen-tts`，并确认模型能够正常加载。若使用 NVIDIA GPU，PyTorch、CUDA 与显卡驱动版本需要相互兼容。
 
-每个模板在 `py/templates/*.json` 中带有 `ui` 元数据（中文标签、参数提示、控件类型、下拉选项），向导页面由此自动生成表单。
-
-## 提供的工具（模型可见）
-
-| 工具 | 作用 | 适用场景 |
-|---|---|---|
-| `list_math_templates` | 列出模板与参数模式 | 开场发现能力 |
-| `render_math_scene` | 模板参数化渲染（安全） | 推荐路径 |
-| `render_math_code` | 渲染模型自写 Manim 场景 | 模板不匹配时 |
-
-两个渲染工具都支持可选的 `narration` 参数。传入中文讲稿后，插件默认请求
-本地调用已安装的 `qwen-tts` Python 包，使用
-`Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice` 和 `Vivian` 声音，并使用 ffmpeg 将音频合成到返回的 MP4。
-只有在确实部署了 HTTP 兼容服务时，才通过 `QWEN3_TTS_URL` 切换到远程调用模式。
-| `validate_math_code` | AST 静态安全校验 | 渲染前的自愈检查 |
-
-## 零代码技能包（Skill，核心推荐）
-
-插件加载时会自动向 `ctx.skills` 注册两个技能（`skills/<name>/SKILL.md`，每份都是一份完整提示词）：
-
-| 技能 | 路径 | 定位 |
-|---|---|---|
-| `math-animation` | `skills/math-animation/` | **默认推荐**：模板路径。把模型训练成"数学动画翻译官"，口语 → 模板参数 → `render_math_scene` |
-| `manim-codegen` | `skills/manim-codegen/` | **进阶**：自由代码路径。模板无法表达时，模型直接编写 Manim 0.19 场景代码 → `validate_math_code` → `render_math_code`，实现多步动画、物体运动、图形变换、物理模拟等无限表现力 |
-
-**双轨自动决策**：`math-animation` 技能内置决策树，模板覆盖得了的需求走模板（安全、成功率高）；覆盖不了或连续失败时，自动加载 `manim-codegen` 切换自由代码。用户视角始终是零代码。
-
-### 使用者视角（零代码，完全不用接触代码）
-
-在 dsh 对话中直接说数学/物理语言即可，例如：
-
-- 「画一个正弦函数和余弦函数在同一坐标系里的对比动画」
-- 「y=x² 在 x=1 处的切线，标出导数」
-- 「画出 sin x 从 0 到 π 的定积分，涂上面积」
-- 「画一个蓝色三角形，标 ∠ABC」
-- 「画心形线 r=1+cosθ」
-- 「画马鞍面 z=x²-y²，能旋转的」
-- 「弹簧振子的位移-时间图像」（物理 → 自动翻译为简谐运动曲线）
-
-模型会加载技能 → 翻译成模板参数 → 调用 `render_math_scene` → 返回视频。超出模板时自动切换 `manim-codegen` 写代码渲染。技能内置：
-
-- **口语 → 表达式翻译表**（"x 的平方"→`x**2`，极坐标、3D 双变量同样覆盖）
-- **模板选择决策树**（需求类型 → 模板）
-- **精细动画加分项**（标题智能渲染：数学公式走 LaTeX、含中文自动走 Pango 文本渲染，中文标题无忧；贴合函数形状的坐标区间、多曲线配色、low 预览→high 出片）
-- **自愈循环**（参数校验/表达式/LaTeX 报错 → 自动修正重试，连续 2 次失败才询问用户）
-
-### 技能启用方式（二选一）
+Ubuntu 可安装 FFmpeg 工具：
 
 ```bash
-# 方式 A：加载本插件，技能随插件自动注册（推荐，零配置）
+sudo apt update
+sudo apt install ffmpeg
+```
+
+确认命令可用：
+
+```bash
+which ffmpeg
+which ffprobe
+ffmpeg -version
+ffprobe -version
+```
+
+### 2. 安装 JavaScript 依赖并构建
+
+```bash
+git clone https://github.com/cfxing/dshmath-manim.git
+cd dshmath-manim
+pnpm install
+pnpm build
+```
+
+### 3. 在 DSH 中加载插件
+
+在 DSH 仓库或相应开发环境中，通过插件配置加载本项目的 `math-manim.cordis.yml`。例如：
+
+```bash
 dsh --patch /path/to/dshmath-manim/math-manim.cordis.yml
-
-# 方式 B：不加载插件，直接把技能文件放入技能根目录
-mkdir -p ~/.dsh/skills && cp -r skills/math-animation skills/manim-codegen ~/.dsh/skills/
 ```
 
-> 技能遵循 dsh「渐进披露」：默认只向模型暴露 `name + description` 摘要（小 token），
-> 模型判定需要时才通过 `skill` 工具展开完整 `<skill_content>`，不占日常对话预算。
-> 用户也可直接输入 `/math-animation` 显式注入技能全文。
+请根据本机 DSH 的安装方式调整路径和启动命令。当前 `package.json` 声明的 DSH peer 依赖版本为 `^0.2.0-rc.2`。
 
-## 快速开始
+## 不依赖 DSH 的后端验证
 
-### 1. Python 依赖
+可先直接调用 Python 渲染器，验证模板系统和 Manim 环境。
 
-```bash
-pip install manim numpy
-```
-
-### 2. 独立验证 Python 后端（无需 dsh）
+列出模板：
 
 ```bash
-# 列出模板
 python3 py/manim_runner.py templates
+```
 
-# 渲染函数绘图（sin + x²）
+渲染函数图像示例：
+
+```bash
 python3 py/manim_runner.py render \
   --template function_plot \
-  --params '{"functions": ["np.sin(x)", "x**2"], "title": "y=\\sin(x),\\ y=x^2"}' \
-  --quality low --outdir out
-
-# 校验模型代码（拦截危险调用）
-python3 py/manim_runner.py validate --code 'import os; os.system("rm -rf /")'
+  --params '{"functions":["np.sin(x)","x**2"],"title":"y=sin(x), y=x^2"}' \
+  --quality low \
+  --outdir out
 ```
 
-### 3. 在 DeepSeek Harness 中加载
+测试静态安全校验：
 
 ```bash
-# 方式 A：本地 patch（在 dsh 仓库目录）
-dsh --patch /path/to/dshmath-manim/math-manim.cordis.yml
-
-# 方式 B：作为 npm 插件发布后按名字加载
-# - insert:
-#     - id: dshmath-manim
-#       name: 'dshmath-manim'
+python3 py/manim_runner.py validate --code 'import os; os.system("echo unsafe")'
 ```
 
-> 依赖要求：本插件面向新版 dsh web（依赖族 `@deepseek-ai/*@0.1.1-rc.2`）。
-> `package.json` 的 peerDependencies 已声明 `@deepseek-ai/dsh-skill` / `@deepseek-ai/dsh-tools`
-> 为 `^0.1.1-rc.2`，并采用新版插件的同名 `Config` + Schemastery `Schema` 配置格式，
-> 与较新的 dsh web 兼容。若使用更早的 `0.1.0-rc.x` 版本 dsh，请降级对应 peer 依赖。
+该示例用于确认危险导入或调用会被校验器拒绝，不应将不可信的场景代码绕过校验后执行。
 
-加载后启动 `npx @deepseek-ai/dsh web`，在对话中即可使用，例如：
+## 配置与故障排查
 
-> "用曼哈顿比例绘制 y = sin(x) 和 y = x² 的动画，并标注函数名"
+### Qwen3-TTS
 
-模型会调用 `list_math_templates` → `render_math_scene` 完成渲染。
+插件默认使用本地 Qwen3-TTS；只有在确实部署了兼容的 HTTP TTS 服务时，才配置 `QWEN3_TTS_URL` 切换到 HTTP 路径。可根据部署情况配置模型、音色、语言、设备和数据类型等环境变量；具体以当前后端代码支持的变量为准。
 
-## 打包与发布（让其他使用者安装）
+如果 TTS 失败，建议按顺序检查：
 
-插件是标准的 dsh bundle 包：`package.json` 声明 `dsh.bundle.patch` 指向 `math-manim.cordis.yml`，
-`files` 字段保证 `dist/`（编译产物）、`py/`（Python 渲染后端与模板）、`skills/`（技能提示词）全部随包分发。
+1. 使用插件实际调用的 Python 解释器直接运行一次短句合成。
+2. 确认模型文件可访问，且模型与 CUDA/PyTorch 环境兼容。
+3. 确认输出 WAV 文件生成成功且非空。
+4. 使用 `ffprobe` 检查音频时长。
+5. 查看插件返回的 stderr 或异常详情，区分模型加载、推理和音频合成阶段的问题。
 
-### 方式一：npm 发布（推荐，使用者一行安装）
+首次启动模型会产生加载开销。分段旁白的时间轴以各段实际音频时长为依据；不要通过手工猜测 RUN 或只按文本长度估算时长来掩盖同步问题。
+
+### Manim 与 FFmpeg
+
+- 找不到 `manim`：确认它安装在渲染器实际使用的 Python 环境中。
+- 找不到 `ffmpeg` 或 `ffprobe`：检查系统 PATH，并确保启动 DSH 的进程继承了正确环境。
+- 中文文本显示异常：检查 Manim、Pango 和系统中文字体是否可用。
+- LaTeX 渲染失败：先尝试简化标题或改用普通文本，再检查 TeX 环境。
+
+## 项目结构
+
+```text
+dshmath-manim/
+├── math-manim.cordis.yml       # DSH 插件加载配置
+├── package.json                # 包元数据、依赖与构建脚本
+├── src/
+│   ├── index.ts                # 插件入口与工具注册
+│   └── runner.ts               # TypeScript 与 Python 后端桥接
+├── py/
+│   ├── manim_runner.py         # 模板、校验、渲染与音视频处理
+│   ├── qwen3_tts_runner.py     # 本地 Qwen3-TTS 适配器
+│   ├── templates/              # 模板定义
+│   └── examples/               # 自定义场景示例
+└── skills/
+    ├── math-animation/SKILL.md # 模板优先的数学动画技能
+    └── manim-codegen/SKILL.md # 自由 Manim 场景生成技能
+```
+
+## 安全设计
+
+- **模板路径**：使用已声明的模板和参数进行渲染，避免直接执行任意模型表达式作为 Python 代码。
+- **自由代码路径**：渲染前执行 AST 静态校验，拦截已列入规则的危险导入、名称与调用。
+- **子进程执行**：Python 渲染通过独立子进程运行，并设置超时与取消处理。
+- **边界说明**：AST 静态检查是防护措施之一，不等同于完整操作系统沙箱；不要将其视为对任意不可信代码的绝对安全保证。
+
+## 构建与打包
 
 ```bash
-cd dshmath-manim
-npm run build            # 编译 dist/
-npm publish              # 发布到 npm（会先跑 build）
-# 使用者侧：
-dsh plugin --profile web add dshmath-manim
+pnpm build
+npm pack
 ```
 
-### 方式二：tarball 交付（内部/私有分发）
+打包内容由 `package.json` 的 `files` 字段控制，包含编译产物、Python 后端、技能文件、插件配置和 README。发布或分发前，建议在目标 DSH profile 中验证安装、工具注册、Manim 渲染和 TTS 合成的完整流程。
 
-```bash
-npm pack                 # 生成 dshmath-manim-0.1.0.tgz
-# 使用者侧：
-dsh plugin add ./dshmath-manim-0.1.0.tgz
-```
+## 开发状态
 
-### 方式三：GitHub 安装
-
-给仓库打 `dsh-plugin` 话题即可进入社区生态；使用者可 `dsh plugin add github:you/dshmath-manim`。
-注意 git 安装拉取的是源码，需要 `prepare` 脚本且用户需在 profile 的 `pnpm-workspace.yaml`
-`allowBuilds` 中授权构建——推荐优先用 npm / tarball 避免此门槛。
-
-### 使用者安装后的效果
-
-安装成功后，使用者只需在 dsh 对话中说数学/物理语言，例如「画一个蓝色三角形标 ∠ABC」或
-「弹簧振子的动画」，模型会加载插件注册的两个技能（`math-animation` 模板路径 / `manim-codegen`
-自由代码路径）自动生成动画。**使用者侧无需安装任何 Python 依赖** —— 但渲染需要本机已安装
-`manim` + `numpy`（见上「Python 依赖」），或后续可内置自动检测提示。
-
-## 安全模型
-
-- **模板渲染**：参数只做 `{key}` 文本替换 + JSON 字面量序列化，**绝不 eval 模型输入**
-- **模型代码**：AST 静态校验，拦截 `os`/`subprocess`/`eval`/`open` 等危险符号后才渲染
-- **进程隔离**：渲染始终在 Python 子进程内执行，带超时与取消信号（`exec.signal`）
-- **环境隔离**：子进程清除 IDE 注入的钩子（`CODEBUDDY_SAFE_DELETE_*`），避免 TeX 临时文件清理被拦截
-
-## 自愈循环（与 dsh agent loop 协同）
-
-模型写出场景 → `validate_math_code` 检查 → 失败则根据 violations 重写 → `render_math_scene`/`render_math_code` 渲染 → 渲染错误（含 LaTeX 报错）作为 tool result 回喂 → 模型修正。错误信息被裁剪到末尾 2000 字符返回，避免上下文爆炸。
-
-## 路线图
-
-- [x] Python 渲染后端 + 6 个数学模板（本地验证通过）
-- [x] TS 插件（4 个工具注册）
-- [x] 零代码技能包：`math-animation` Skill（模板路径：提示词引导参数翻译）
-- [x] 进阶技能包：`manim-codegen` Skill（自由代码路径：模型直接写 Manim 场景代码）
-- [ ] dsh 仓库内集成测试（需在 deepseek-harness 仓库中 pnpm 安装验证）
-- [ ] UI 卡片（`presentResult` 内嵌视频预览）
-- [ ] 对话式增量修改（改模板参数重渲染）
+本项目持续迭代中。涉及模型加载复用、TTS 性能、UI 预览和 DSH 集成的行为，应以当前分支代码和实际运行结果为准。欢迎通过 Issues 或 Pull Requests 反馈问题。
